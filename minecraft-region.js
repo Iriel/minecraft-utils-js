@@ -120,9 +120,123 @@ Chunk.prototype.summarize = function() {
 exports.Chunk = Chunk;
 
 // ---------------------------------------------------------------------------
+var ManagedFileDescriptor = function(fd) {
+    this._fd = fd;
+    this._users = 0;
+    this._handles = [];
+    this._closing = false;
+}
 
-var RegionFile = function(fd) {
-    this.fd = fd;
+var handleId = 0;
+
+var RESET_OWNER = function() { "RESET_OWNER" };
+
+ManagedFileDescriptor.prototype.use = function() {
+    if (this._closing) {
+	throw new Error("Descriptor is closing!");
+    }
+    var curFd = this._fd;
+    var that = this;
+    var curId = ++handleId;
+    var func = function(arg, other) {
+	if (arg == RESET_OWNER) {
+	    that = other;
+	} else if (arg == false) {
+	    //util.log("Releasing handle " + curId + " " + curFd);
+	    if (curFd != null) {
+		that._release(func);
+	    }
+	    curFd = null;
+	} else {
+	    if (curFd == null) {
+		throw new Error("Null file descriptor!!");
+	    }
+	    return curFd; 
+	}
+    }
+    ++this._users;
+    // util.log("Created handle " + handleId + " " + curFd + " " + Object.keys(this._handles).length);
+    this._handles.push(func);
+    return func;
+}
+
+ManagedFileDescriptor.prototype._release = function(func) {
+    var handles = this._handles;
+    for (var i = 0; i < handles.length; ++i) {
+	if (handles[i] == func) {
+	    handles.splice(i, 1);
+	    --this._users;
+	    if (this._users == 0) {
+		if (this._closing) {
+		    fs.close(this._fd);
+		    this._fd = null;
+		}
+	    }
+	    return;
+	}
+    }
+    throw new Error("Attemped to remove unknown handle");
+}
+
+ManagedFileDescriptor.prototype.replace = function(fd) {
+    if (this._users > 0) {
+	var replacement = new ManagedFileDescriptor(this._fd);
+	var handles = this._handles;
+
+	replacement._users = this._users;
+	replacement._handles = handles;
+
+	this._users = null;
+	this._handles = [];
+
+	for (var i = 0; i < handles.length; ++i) {
+	    handles[i](RESET_OWNER, replacement);
+	}
+	replacement.close();
+    } else if (this._fd != null) {
+	this.close();
+    }
+    this._fd = fd;
+    this._closing = false;
+}
+
+ManagedFileDescriptor.prototype.close = function () {
+    if (this._fd == null) { return; }
+    this._closing = true;
+    if (this.users > 0) { return; }
+    var fd = this._fd;
+    this._fd = null;
+    fs.close(fd);
+}
+
+ManagedFileDescriptor.prototype.isOpen = function() {
+    return ((!this._closing) && (this._fd != null));
+}
+
+
+// ---------------------------------------------------------------------------
+
+var RegionFile = function(filename) {
+    this.filename = filename;
+}
+
+// TODO revisit this, make it more awesome (asynchronous?)
+RegionFile.prototype._getFileHandle = function() {
+    var mfd = this._managedFd;
+    if (mfd && mfd.isOpen()) {
+	return mfd.use();
+    }
+
+    var path = this.filename;
+    var that = this;
+    var fd = fs.openSync(path,  "r");
+    if (mfd) {
+	mfd.replace(fd);
+    } else {
+	mfd = new ManagedFileDescriptor(fd);
+	this._managedFd = mfd;
+    }
+    return mfd.use();
 }
 
 RegionFile.prototype.getIndex = function(callback) {
@@ -140,7 +254,9 @@ RegionFile.prototype.getIndex = function(callback) {
     var that = this;
 
     var indexBuf = new Buffer(BLOCK_SIZE * 2);
-    readFully(this.fd, 0, indexBuf, function(err, buf) {
+    var handle = this._getFileHandle();
+    readFully(handle(), 0, indexBuf, function(err, buf) {
+	handle(false);
 	if (err) {
 	    notifyPending(that, '_indexLoading', err);
 	}
@@ -158,10 +274,11 @@ RegionFile.prototype.getRawChunkData = function(x, z, callback) {
 	x += z * 32;
     }
 
-    var fd = this.fd;
+    var handle = this._getFileHandle();
 
     this.getIndex(function(err, index) {
 	if (err) {
+	    handle(false);
 	    callback(err);
 	    return;
 	}
@@ -169,6 +286,7 @@ RegionFile.prototype.getRawChunkData = function(x, z, callback) {
 	var entry = index.readInt32BE(x * 4);
 	if (entry == 0) {
 	    // No data
+	    handle(false);
 	    callback(null);
 	    return;
 	}
@@ -177,8 +295,9 @@ RegionFile.prototype.getRawChunkData = function(x, z, callback) {
 	var entryBlocks = (entry & 0x0ff);
 	var entryBuffer = new Buffer(entryBlocks * BLOCK_SIZE);
 	// util.log("FD " + fd + " Index: " + x + " Entry: " + entry + " Offset: " + entryOffset + " Size: " + entryBlocks);
-	readFully(fd, entryOffset * BLOCK_SIZE, entryBuffer,
+	readFully(handle(), entryOffset * BLOCK_SIZE, entryBuffer,
 		  function(err, buf) {
+		      handle(false);
 		      if (err) {
 			  callback(err);
 			  return;
@@ -315,9 +434,8 @@ RegionFile.prototype.forAllChunks = function(iterator, callback) {
 }
 
 RegionFile.prototype.close = function() {
-    if (!this.fd) { return; }
-    fs.close(this.fd);
-    this.fd = null;
+    if (!this._managedFd) { return; }
+    this._managedFd.close();
 }
 
 exports.RegionFile = RegionFile;
@@ -390,13 +508,7 @@ Dimension.prototype.getIndex = function(callback) {
 Dimension.prototype._loadRegionFile = function(rFile, callback) {
     // TODO use path module
     var path = this._root + "/region/" + rFile;
-    fs.open(path, "r", function(err, fd) {
-	if (err) {
-	    callback(err); return;
-	}
-	util.log("Opened " + path + " -> " + fd);
-	callback(null, new RegionFile(fd));
-    });
+    callback(null, new RegionFile(path));
 }
 
 Dimension.prototype.getRegion = function(x, z, callback) {
