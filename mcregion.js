@@ -75,14 +75,199 @@ var countTileEntities = function(dimension, callback) {
 			    }, 10);
 }
 
-//countTileEntities(world, showResult);
-countTileEntities(nether, showResult);
-//countTileEntities(theend, showResult);
+function forAllDimensionChunks(dimension, iterator, callback, limit) {
+    var regionIterFunc = function(region, next) {
+	region.forAllChunks(iterator,
+			    function(err) {
+				region.close();
+				next(err);
+			    });
+    }
 
+    dimension.forAllRegions2(regionIterFunc,
+			    function(err) {
+				if (err) {
+				    callback(err);
+				    return;
+				}
+				callback(null);
+			    }, limit);
+}
+
+function countBlocks(dimension, callback) {
+    var result = {};
+    function chunkCallback(chunk, next) {
+	var sections = chunk._level.Sections;
+	var myBlocks = {};
+	for (var i = 0; i < sections.length; ++i) {
+	    var section = sections[i];
+	    var blocks = section.Blocks;
+	    for (var j = 0; j < blocks.length; ++j) {
+		var id = blocks.readInt8(j) & 0x0ff;
+		myBlocks[id] = (myBlocks[id] || 0) + 1;
+	    }
+	}
+	var keys = Object.keys(myBlocks);
+	for (var i = 0; i < keys.length; ++i) {
+	    var id = keys[i];
+	    var data = result[id];
+	    if (!data) {
+		data = { id: id, count: 0, chunks : 0 }
+		result[id] = data;
+	    }
+	    data.count += myBlocks[id];
+	    data.chunks++;
+	}
+	next();
+    }
+
+    function byFrequency(a, b) {
+	if (a.chunks > b.chunks) { return -1 }
+	if (a.chunks < b.chunks) { return 1 }
+
+	if (a.count > b.count) { return -1 }
+	if (a.count < b.count) { return 1 }
+
+	if (a.id > b.id) { return 1 }
+	if (a.id < b.id) { return -1 }
+	return 0;
+    }
+
+    function finalCallback(err) {
+	if (err) { callback(err); return; }
+
+	var keys = Object.keys(result);
+	var resList = [];
+	for (var i = 0; i < keys.length; ++i) {
+	    var id = keys[i];
+	    resList[i] = result[id]
+	}
+	resList.sort(byFrequency);
+	callback(null, resList);
+    }
+    forAllDimensionChunks(dimension, chunkCallback, finalCallback, 10);
+}
+
+var NATURAL_NETHER_BLOCKS = {
+    0 : "Air",
+
+    7 : "Bedrock",
+
+    10 : "Lava Source",
+    11 : "Lava",
+    13 : "Gravel",
+
+    39 : "Mushroom (brown)",
+    40 : "Mushroom (red)",
+
+    51 : "Fire",
+
+    87 : "Netherrack",
+    88 : "Soul Sand",
+    89 : "Glowstone",
+
+    112 : "Nether Brick",
+    113 : "Nether Brick Fence",
+    114 : "Nether Brick Stairs",
+    115 : "Nether Wart",
+}
+
+var MANMADE_NETHER_BLOCKS = {
+    4 : "Cobblestone",
+
+    20 : "Glass",
+    27 : "Powered Rail",
+
+    44 : "Stone Slab",
+    50 : "Torch",
+
+    63 : "Sign (Block)",
+
+    66 : "Rail",
+    67 : "Cobblestone Stairs",
+    68 : "Sign (Wall)",
+    69 : "Lever",
+
+    75 : "Redstone Torch (off)",
+    76 : "Redstone Torch (on)",
+    77 : "Button (Stone)",
+
+    98 : "Stone Brick",
+
+    101 : "Iron Bars",
+    102 : "Glass Pane"
+}
+
+function netherBlockCheck(err, blocks) {
+    if (err) {
+	util.error("FAILED: " + JSON.stringify(err));
+	return;
+    }
+    for (var i = 0; i < blocks.length; ++i) {
+	var block = blocks[i];
+	var natural = NATURAL_NETHER_BLOCKS[block.id];
+	var manmade = MANMADE_NETHER_BLOCKS[block.id];
+	if (manmade) {
+	    console.log(">>>\t" + block.id + "\t" + block.chunks + "\t" + block.count + ":\t" + manmade);
+	} else if (natural) {
+	    console.log(" -\t" + block.id + "\t" + block.chunks + "\t" + block.count + ":\t" + natural);
+	} else {
+	    console.log("???\t" + block.id + "\t" + block.chunks + "\t" + block.count);
+	}
+    }
+}
+
+function findNaturalChunks(dimension, naturalBlocks, callback) {
+    var result = {};
+    function chunkCallback(chunk, next) {
+	var x = chunk._level.xPos;
+	var z = chunk._level.zPos;
+	var sections = chunk._level.Sections;
+	for (var i = 0; i < sections.length; ++i) {
+	    var section = sections[i];
+	    var blocks = section.Blocks;
+	    for (var j = 0; j < blocks.length; ++j) {
+		var id = blocks.readInt8(j) & 0x0ff;
+		if (!naturalBlocks[id]) {
+		    console.log("KEEP [" + x + "," + z + "]");
+		    next();
+		    return;
+		}
+	    }
+	}
+	var rx = Math.floor(x / 32);
+	var rz = Math.floor(z / 32);
+	var cx = x - (rx * 32);
+	var cz = z - (rz * 32);
+
+	var rFile = "r." + rx + "." + rz + ".mca";
+	var rOfs = cx + cz * 32;
+
+	console.log("REMOVE [" + x + "," + z + "]\t" + rFile
++ "\t" + rOfs);
+
+	var fResult = result[rFile];
+	if (fResult == null) {
+	    fResult = [];
+	    result[rFile] = fResult;
+	}
+	fResult.push(rOfs);
+
+	next();
+    }
+
+    forAllDimensionChunks(dimension, chunkCallback, 
+			  function(err) {
+			      if (err) { callback(err); return; }
+			      callback(null, result);
+			  }, 10);
+}
+
+//countTileEntities(world, showResult);
+//countTileEntities(nether, showResult);
+//countTileEntities(theend, showResult);
 /*
 var repl = require('repl').start("Node> ");
-
-repl.context.notifyPending = notifyPending;
 
 repl.context.world = world;
 repl.context.nether = nether;
@@ -90,4 +275,15 @@ repl.context.theend = theend;
 
 repl.context.showResult = showResult;
 repl.context.countTileEntities = countTileEntities;
+repl.context.forAllDimensionChunks = forAllDimensionChunks;
+repl.context.countBlocks = countBlocks;
 */
+
+findNaturalChunks(nether, NATURAL_NETHER_BLOCKS, function(err, result) {
+    if (err) {
+	util.error("FAILED: " + JSON.stringify(err));
+	return;
+    }
+    console.log(JSON.stringify(result));
+    countBlocks(nether, netherBlockCheck);
+});
