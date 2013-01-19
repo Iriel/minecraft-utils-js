@@ -472,6 +472,68 @@ Dimension.prototype.forAllRegions = function(iterator, callback) {
     });
 }
 
+Dimension.prototype.forAllRegions2 = function(iterator, callback, limit) {
+    var that = this;
+
+    var fileList;
+    var pending = 0;
+    var limit = Number(limit) || 5;
+    var error;
+
+    var next = function(err) {
+	--pending;
+	if (err) {
+	    if (!error) {
+		// This is the first error
+		error = err;
+		fileList = [];
+	    } else {
+		util.log("Ignoring subsequent error: " + JSON.stringify(err));
+	    }
+	}
+	if (pending == 0 && fileList.length == 0) {
+	    // All done!
+	    callback(error);
+	    return;
+	}
+	dispatch();
+    }
+
+    var doRegion = function(err, region) {
+	if (err) {
+	    next(err);
+	    return;
+	}
+	iterator(region, next);
+    }
+
+    var dispatch = function() {
+	while (pending < limit && fileList.length > 0) {
+	    var todo = fileList.shift();
+	    ++pending;
+	    that._loadRegionFile(todo, doRegion);
+	}
+    }
+
+    this.getIndex(function(err, index) {
+	if (err) {
+	    callback(err);
+	    return;
+	}
+	var allFiles = [];
+	for (var cx = index.minX; cx <= index.maxX; ++cx) {
+	    var xMap = index[cx];
+	    if (!xMap) { continue; }
+	    for (var cz = index.minZ; cz <= index.maxZ; ++cz) {
+		var rFile = xMap[cz];
+		if (rFile) { allFiles.push(rFile); }
+	    }
+	}
+	fileList = allFiles;
+	dispatch();
+    });
+}
+
 exports.Dimension = Dimension;
 
 // ---------------------------------------------------------------------------
@@ -520,14 +582,11 @@ function tagReaderCallback(err, tagReader) {
     tagReader.readObject(tagCallback);
 }
 
-var repl = require('repl').start("Node> ");
+var world =  new Dimension('testdata/NextEdenReal/CogRail3/');
+var nether = new Dimension('testdata/NextEdenReal/CogRail3/DIM-1');
+var theend = new Dimension('testdata/NextEdenReal/CogRail3/DIM1');
 
-repl.context.notifyPending = notifyPending;
-
-repl.context.world = new Dimension('testdata/NextEdenReal/CogRail3/');
-repl.context.nether = new Dimension('testdata/NextEdenReal/CogRail3/DIM-1');
-repl.context.theend = new Dimension('testdata/NextEdenReal/CogRail3/DIM1');
-repl.context.showResult = function(err, result) {
+var showResult = function(err, result) {
     if (err) {
 	util.error("Failed: " + JSON.stringify(err));
 	return;
@@ -535,7 +594,7 @@ repl.context.showResult = function(err, result) {
     console.log(JSON.stringify(result, null, "  "));
 }
 
-repl.context.countTileEntities = function(dimension, callback) {
+var countTileEntities = function(dimension, callback) {
     var result = {};
     var chunkIterFunc = function(chunk, next) {
 	result.chunks = (result.chunks || 0) + 1;
@@ -544,12 +603,38 @@ repl.context.countTileEntities = function(dimension, callback) {
 	    var entity = tileEntities[i];
 	    var id = entity.id;
 	    result[id] = (result[id] || 0) + 1;
+	    if (id == 'Chest') {
+		//util.log(JSON.stringify(entity));
+		var count = 0;
+		var stacks = 0;
+		var items = entity.Items;
+		for (var j = 0; j < items.length; ++j) {
+		    var item = items[j];
+		    if (item.Count > 0) {
+			count += item.Count;
+			stacks++;
+			var itemid = "Chest=" + item.id;
+			result[itemid] = (result[itemid] || 0) + item.Count;
+		    }
+		}
+
+		result['Chest+' + count] = (result['Chest+' + count] || 0) + 1; 
+		result['Chest/' + stacks] = (result['Chest/' + stacks] || 0) + 1; 
+	    }
+	    id = entity.id + "@" + (Math.floor(entity.x / 500) * 500) + "x" + (Math.floor(entity.z / 500) * 500);
+	    result[id] = (result[id] || 0) + 1;
 	}
+	    /*	var entities = chunk._entities;
+	for (var i = 0; i < entities.length; ++i) {
+	    var entity = entities[i];
+	    var id = entity.id;
+	    result[id] = (result[id] || 0) + 1;
+	} */
 	next();
     }
-
     var regionIterFunc = function(region, next) {
 	result.regions = (result.regions || 0) + 1;
+
 	region.forAllChunks(chunkIterFunc,
 			    function(err) {
 				region.close();
@@ -557,13 +642,29 @@ repl.context.countTileEntities = function(dimension, callback) {
 			    });
     }
 
-    dimension.forAllRegions(regionIterFunc,
+    dimension.forAllRegions2(regionIterFunc,
 			    function(err) {
 				if (err) {
 				    callback(err);
 				    return;
 				}
 				callback(null, result);
-			    });
+			    }, 10);
 }
 
+countTileEntities(world, showResult);
+//countTileEntities(nether, showResult);
+//countTileEntities(theend, showResult);
+
+/*
+var repl = require('repl').start("Node> ");
+
+repl.context.notifyPending = notifyPending;
+
+repl.context.world = world;
+repl.context.nether = nether;
+repl.context.theend = theend;
+
+repl.context.showResult = showResult;
+repl.context.countTileEntities = countTileEntities;
+*/
