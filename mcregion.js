@@ -34,11 +34,14 @@ function readFully(fd, ofs, buffer, pos, toRead, callback) {
     }
     var readCallback = function(err, bytesRead, buffer) {
 	if (err) {
+	    // util.log("Error in readCallback " + JSON.stringify(err));
 	    callback(err);
 	    return;
 	}
 	if (bytesRead == 0) {
-	    callback(new Error("EOF during read"));
+	    var err = new Error("EOF during read");
+	    //util.log("Zero read " + JSON.stringify(err));
+	    callback(err);
 	    return;
 	}
 	// TODO fail if bytesRead == 0?
@@ -49,13 +52,72 @@ function readFully(fd, ofs, buffer, pos, toRead, callback) {
 	    return;
 	}
 	if (toGet > 0) {
+	    //util.log("Reading " + fd + " " + pos + " " + toGet + " " + (ofs + pos));
 	    fs.read(fd, buffer, pos, toGet, ofs + pos, readCallback);
 	} else {
 	    callback(null, buffer);
 	}
     }
+    //util.log("Reading " + fd + " " + pos + " " + toGet + " " + (ofs + pos));
     fs.read(fd, buffer, pos, toGet, ofs + pos, readCallback);
 }
+
+function notifyPending(obj, property) {
+    var callbacks = obj[property];
+    if (callbacks == null) { return; }
+    obj[property] = null;
+
+    var argsArray = Array.prototype.slice.call(arguments, 2);
+    for (var i = 0; i < callbacks.length; ++i) {
+	var cb = callbacks[i];
+	if (cb != null) { cb.apply(null, argsArray); }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+var Chunk  = function(taggedObj, saveTime) {
+    if (!taggedObj.Level) {
+	throw new Error("Chunk object without level!");
+    }
+    this._obj = taggedObj;
+    this._saveTime = saveTime;
+
+    var level = taggedObj.Level;
+    this._level = level;
+    this._entities = level.Entities;
+    this._biomes = level.Biomes;
+    this._tileEntities = level.TileEntities;
+    this._heightMap = level.HeightMap;
+
+    /*util.log('New Chunk [' + this.getXPos() + "," + this.getZPos() + "] time="
+	     + new Date(saveTime * 1000)); */
+}
+
+Chunk.prototype.getXPos = function() { return this._level.xPos; }
+
+Chunk.prototype.getZPos = function() { return this._level.zPos; }
+
+Chunk.prototype.summarize = function() {
+    var tileEntities = this._tileEntities;
+    for (var i = 0; i < tileEntities.length; ++i) {
+	var ent = tileEntities[i];
+	var desc = i + " [" + ent.x + "," + ent.y + "," + ent.z
+		    + "] " + ent.id;
+
+	if (ent.id == 'Sign') {
+	    desc = desc + " "
+		+ ent.Text1 + "/" + ent.Text2 + "/" + ent.Text3 + "/" + ent.Text4;
+	} else if (ent.id == 'Chest') {
+	    desc = desc + " Items: " + ent.Items.length;
+	}
+
+	console.log(desc);
+    }
+}
+
+exports.Chunk = Chunk;
+
 // ---------------------------------------------------------------------------
 
 var RegionFile = function(fd) {
@@ -77,22 +139,12 @@ RegionFile.prototype.getIndex = function(callback) {
     var that = this;
 
     var indexBuf = new Buffer(BLOCK_SIZE * 2);
-    readFully(fd, 0, indexBuf, function(err, buf) {
-	var callbacks = that._indexLoading;
-	this._indexLoading = null;
+    readFully(this.fd, 0, indexBuf, function(err, buf) {
 	if (err) {
-	    if (callbacks) {
-		for (var i = 0; i < callbacks.length; ++i) {
-		    callbacks[i](err);
-		}
-	    }
+	    notifyPending(that, '_indexLoading', err);
 	}
 	that._index = buf;
-	if (callbacks) {
-	    for (var i = 0; i < callbacks.length; ++i) {
-		callbacks[i](null, buf);
-	    }
-	}
+	notifyPending(that, '_indexLoading', null, buf);
     });
 }
 
@@ -123,6 +175,7 @@ RegionFile.prototype.getRawChunkData = function(x, z, callback) {
 	var entryOffset = (entry >>> 8);
 	var entryBlocks = (entry & 0x0ff);
 	var entryBuffer = new Buffer(entryBlocks * BLOCK_SIZE);
+	// util.log("FD " + fd + " Index: " + x + " Entry: " + entry + " Offset: " + entryOffset + " Size: " + entryBlocks);
 	readFully(fd, entryOffset * BLOCK_SIZE, entryBuffer,
 		  function(err, buf) {
 		      if (err) {
@@ -180,20 +233,24 @@ RegionFile.prototype.getChunkObject = function(x, z, callback) {
 
     var objCallback = function(err, object, name) {
 	if (err) {
+	    //util.log("Failed to get chunk object");
 	    callback(err);
 	    return;
 	}
 	if (object == null) {
+	    //util.log("Got a chunk object");
 	    callback(null, obj, objTime);
 	    return;
 	}
 
 	if (obj != null) {
+	    //util.log("Got duplicate chunk object");
 	    callback(new Error("Chunk object is not alone!"));
 	    return;
 	}
 
 	if (name != '') {
+	    //util.log("Got named chunk object");
 	    callback(new Error("Chunk object is unexpectedly named '" + name + "'"));
 	    return;
 	}
@@ -205,10 +262,12 @@ RegionFile.prototype.getChunkObject = function(x, z, callback) {
     this.getChunkStream(x, z,
 			function(err, stream, time) {
 			    if (err) {
+				util.log("Failed chunk stream");
 				callback(err);
 				return;
 			    }
 			    if (stream == null) {
+				//util.log("Null chunk stream");
 				callback(err, null, time);
 				return;
 			    }
@@ -218,28 +277,234 @@ RegionFile.prototype.getChunkObject = function(x, z, callback) {
 			});
 };
 
+RegionFile.prototype.forAllChunks = function(iterator, callback) {
+    var curIndex = -1;
+    var that = this;
+
+    var next;
+    var chunkCallback = function(err, chunk, chunkTime) {
+	if (err) { 
+	    // util.log("Failed chunk - calling back: " + JSON.stringify(err));
+	    throw new Error("BROKE HERE");
+	    callback(err); 
+	    return;
+	}
+	if (chunk) {
+	    iterator(new Chunk(chunk, chunkTime), next);
+	    return;
+	}
+	// util.log("No chunk for " + curIndex);
+	next();
+    }
+    var next = function(err) {
+	if (err) { 
+	    // util.log("Failed next - calling back");
+	    callback(err); 
+	    return;
+	}
+	++curIndex;
+	if (curIndex >= BLOCK_CHUNKS) { 
+	    // util.log("Iteration complete - calling back");
+	    callback();
+	    return;
+	}
+	that.getChunkObject(curIndex, chunkCallback);
+    }
+    next();
+}
+
+RegionFile.prototype.close = function() {
+    if (!this.fd) { return; }
+    fs.close(this.fd);
+    this.fd = null;
+}
+
 exports.RegionFile = RegionFile;
 
 // ---------------------------------------------------------------------------
-var fd = fs.openSync('testdata/NextEdenReal/CogRail3/region/r.0.0.mca', 'r');
 
-var region = new RegionFile(fd);
+var REGION_FILE_PATTERN = /^r[.]([-]?[0-9]+)[.]([-]?[0-9]+)[.]mca$/;
 
-region.getIndex(function(err, buf) {
+var Dimension = function(path) {
+    this._root = path;
+
+    util.log("Created dimension: " + path);
+}
+
+Dimension.prototype.getIndex = function(callback) {
+    var index = this._index;
+    if (index) {
+	callback(null, index);
+	return;
+    }
+    if (this._indexPending) {
+	this._indexPending.push(callback);
+	return;
+    }
+    this._indexPending = [ callback ];
+
+    var that = this;
+    // TODO use the path module
+    fs.readdir(this._root + "/region/", function(err, files) {
+	if (err) {
+	    notifyPending(that, '_indexPending', err);
+	    return;
+	}
+
+	var minX, maxX, minZ, maxZ;
+	var map = {};
+	for (var i = 0; i < files.length; ++i) {
+	    var file = files[i];
+	    var match = file.match(REGION_FILE_PATTERN);
+	    if (!match) { continue; }
+	    var x = Number(match[1]);
+	    var z = Number(match[2]);
+	    if (minX == null) {
+		minX = x;
+		maxX = x;
+		minZ = z;
+		maxZ = z;
+	    } else {
+		if (x < minX) { minX = x; } else if (x > maxX) { maxX = x; }
+		if (z < minZ) { minZ = z; } else if (z > maxZ) { maxZ = z; }
+	    }
+	    var xMap = map[x];
+	    if (xMap == null) {
+		xMap = {};
+		map[x] = xMap;
+	    }
+	    xMap[z] = file;
+	}
+
+	map.minX = minX,
+	map.maxX = maxX,
+	map.minZ = minZ,
+	map.maxZ = maxZ,
+
+	that._index = map;
+	notifyPending(that, '_indexPending', null, map);
+    });
+}
+
+Dimension.prototype._loadRegionFile = function(rFile, callback) {
+    // TODO use path module
+    var path = this._root + "/region/" + rFile;
+    fs.open(path, "r", function(err, fd) {
+	if (err) {
+	    callback(err); return;
+	}
+	util.log("Opened " + path + " -> " + fd);
+	callback(null, new RegionFile(fd));
+    });
+}
+
+Dimension.prototype.getRegion = function(x, z, callback) {
+    var that = this;
+    x = Number(x);
+    z = Number(z);
+    this.getIndex(function(err, index) {
+	if (err) { callback(err); return; }
+	var xMap = index[x];
+	if (!xMap) {
+	    callback(null);
+	    return;
+	}
+	var rFile = xMap[z];
+	if (!rFile) {
+	    callback(null);
+	    return;
+	}
+	that._loadRegionFile(rFile, callback);
+    });
+}
+
+Dimension.prototype.forAllRegions = function(iterator, callback) {
+    var cx, cz, index;
+    var that = this;
+    var iterNext;
+    var doThis = function(err, region) {
+	if (err) {
+	    callback(err);
+	    return;
+	}
+	if (region) {
+	    iterator(region, iterNext);
+	    return;
+	}
+	var xmap = index[cx];
+	while (true) {
+	    ++cz;
+	    if (cz > index.maxZ) {
+		cz = index.minZ;
+		while (true) {
+		    ++cx;
+		    if (cx > index.maxX) {
+			// Done!
+			callback(null);
+			return;
+		    }
+		    xmap = index[cx];
+		    if (xmap) { break; }
+		}
+	    }
+	    var rFile = xmap[cz];
+	    if (rFile) {
+		that._loadRegionFile(rFile, doThis);
+		return;
+	    }
+	}
+    }
+    iterNext = function(err) {
+	if (err) {
+	    callback(err);
+	}
+	doThis();
+    }
+    this.getIndex(function(err, cbIndex) {
+	if (err) {
+	    callback(err);
+	    return;
+	}
+	index = cbIndex;
+	cx = cbIndex.minX;
+	cz = cbIndex.minZ - 1;
+	doThis();
+    });
+}
+
+exports.Dimension = Dimension;
+
+// ---------------------------------------------------------------------------
+
+var testfd = fs.openSync('testdata/NextEdenReal/CogRail3/DIM-1/region/r.-3.3.mca', 'r');
+
+var regionTEST = new RegionFile(testfd);
+
+regionTEST.getIndex(function(err, buf) {
     if (err) {
 	throw new Error(err);
     }
 
+    var largest = 0;
+    var largeLoc;
+
     for (var i = 0; i < buf.length / 2; i += 4) {
 	var entry = buf.readInt32BE(i);
-	var entryX = (i / 4) & 0x01f;
+	var entryTime = buf.readInt32BE(i + BLOCK_SIZE);
+	if (entry == 0 && entryTime == 0) { continue; }
+	var entryDate = new Date(entryTime * 1000);
+	var entryX = (i >>> 2) & 0x01f;
 	var entryZ = i >>> 7;
-	var entryTime = new Date(buf.readInt32BE(i + BLOCK_SIZE) * 1000);
 	var entryBlocks = (entry & 0x0ff);
-	var entryOffset = (entry >>> 3);
+	var entryOffset = (entry >>> 8);
 	console.log(entryX + "\t" + entryZ + "\t" + entryOffset + "\t" + entryBlocks
-		    + "\t" + entryTime);
+		    + "\t" + entryDate);
+	if (entryBlocks > largest) {
+	    largest = entryBlocks;
+	    largeLoc = "[" + entryX + "," + entryZ + "] " + (i / 4);
+	}
     }
+    console.log("Largest " + largest + " at " + largeLoc);
 });
 
 var zlib = require('zlib');
@@ -255,18 +520,50 @@ function tagReaderCallback(err, tagReader) {
     tagReader.readObject(tagCallback);
 }
 
-region.getChunkObject(1, 22, function(err, tag, time) {
+var repl = require('repl').start("Node> ");
+
+repl.context.notifyPending = notifyPending;
+
+repl.context.world = new Dimension('testdata/NextEdenReal/CogRail3/');
+repl.context.nether = new Dimension('testdata/NextEdenReal/CogRail3/DIM-1');
+repl.context.theend = new Dimension('testdata/NextEdenReal/CogRail3/DIM1');
+repl.context.showResult = function(err, result) {
     if (err) {
-	throw new Error(err);
-    }
-    if (tag == null) { 
-	console.log("[END]");
+	util.error("Failed: " + JSON.stringify(err));
 	return;
     }
-    tag = tag.Level;
-    var keys = Object.keys(tag);
-    for (var i = 0; i < keys.length; ++i) {
-	console.log("Got tag [" + time  + "] with " + keys[i]);
+    console.log(JSON.stringify(result, null, "  "));
+}
+
+repl.context.countTileEntities = function(dimension, callback) {
+    var result = {};
+    var chunkIterFunc = function(chunk, next) {
+	result.chunks = (result.chunks || 0) + 1;
+	var tileEntities = chunk._tileEntities;
+	for (var i = 0; i < tileEntities.length; ++i) {
+	    var entity = tileEntities[i];
+	    var id = entity.id;
+	    result[id] = (result[id] || 0) + 1;
+	}
+	next();
     }
-    console.log(JSON.stringify(tag.Entities));
-});
+
+    var regionIterFunc = function(region, next) {
+	result.regions = (result.regions || 0) + 1;
+	region.forAllChunks(chunkIterFunc,
+			    function(err) {
+				region.close();
+				next(err);
+			    });
+    }
+
+    dimension.forAllRegions(regionIterFunc,
+			    function(err) {
+				if (err) {
+				    callback(err);
+				    return;
+				}
+				callback(null, result);
+			    });
+}
+

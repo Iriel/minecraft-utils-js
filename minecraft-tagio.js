@@ -158,7 +158,7 @@ TagReader.prototype.write = function(buffer) {
 	var remaining = this._limit - this._pos;
 	var newBuffer = new Buffer(buffer.length + remaining);
 	// Must specify end point since we might have been constrained
-	this._buffer.copy(newBuffer, 0, this._pos, remaining);
+	this._buffer.copy(newBuffer, 0, this._pos, this._pos + remaining);
 	buffer.copy(newBuffer, remaining, 0);
 	buffer = newBuffer;
     }
@@ -498,6 +498,7 @@ TagReader.prototype._consume = function() {
 
 TagReader.prototype._fail = function(error) {
     if (this._failed) { return; }
+    util.log("Signaling failure: " + error);
     if (!error) { error = "TagReader: Failed"; }
     this._failed = error;
     this.writable = false;
@@ -547,6 +548,7 @@ TagReader.prototype.readValue = function(callback) {
 
 TagReader.prototype.readObject = function(callback) {
     if (this._failed) {
+	util.log("CALLBACK: Immediate Failed");
 	callback(this._failed);
 	return;
     }
@@ -556,6 +558,7 @@ TagReader.prototype.readObject = function(callback) {
     }
     var helper = function(reader, buffer, mode, state, value) {
 	if (mode == MODE_ERROR) {
+	    util.log("CALLBACK: MODE_ERROR " + value);
 	    callback(value);
 	    return;
 	}
