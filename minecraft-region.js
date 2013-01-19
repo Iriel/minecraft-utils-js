@@ -4,64 +4,19 @@
 var fs = require('fs');
 var util = require('util');
 var tagio = require('./minecraft-tagio');
+var iohelpers = require('./iohelpers');
 var zlib = require('zlib');
 
 // Region IO Experimeents
 
-var BLOCK_SIZE = 4096;
-var BLOCK_CHUNKS = BLOCK_SIZE / 4;
-var CHUNK_EDGE_SIZE = 32;
+const BLOCK_SIZE = 4096;
+const BLOCK_CHUNKS = BLOCK_SIZE / 4;
+const CHUNK_EDGE_SIZE = 32;
 
-var ENCODING_GZIP = 1;
-var ENCODING_DEFLATE = 2;
+const ENCODING_GZIP = 1;
+const ENCODING_DEFLATE = 2;
 
 // ---------------------------------------------------------------------------
-
-function readFully(fd, ofs, buffer, pos, toRead, callback) {
-    if (toRead == null) {
-	callback = pos;
-	pos = 0;
-	toRead = buffer.length;
-    } else if (callback == null) { 
-	callback = toRead;
-	toRead = buffer.length - pos;
-    }
-    ofs -= pos;
-    var toGet = toRead;
-
-    if (toGet == 0) {
-	callback(null, buffer);
-	return;
-    }
-    var readCallback = function(err, bytesRead, buffer) {
-	if (err) {
-	    // util.log("Error in readCallback " + JSON.stringify(err));
-	    callback(err);
-	    return;
-	}
-	if (bytesRead == 0) {
-	    var err = new Error("EOF during read");
-	    //util.log("Zero read " + JSON.stringify(err));
-	    callback(err);
-	    return;
-	}
-	// TODO fail if bytesRead == 0?
-	toGet -= bytesRead;
-	pos += bytesRead;
-	if (toGet < 0) {
-	    callback(new Error("Assertion failed; Got more data than requested"));
-	    return;
-	}
-	if (toGet > 0) {
-	    //util.log("Reading " + fd + " " + pos + " " + toGet + " " + (ofs + pos));
-	    fs.read(fd, buffer, pos, toGet, ofs + pos, readCallback);
-	} else {
-	    callback(null, buffer);
-	}
-    }
-    //util.log("Reading " + fd + " " + pos + " " + toGet + " " + (ofs + pos));
-    fs.read(fd, buffer, pos, toGet, ofs + pos, readCallback);
-}
 
 function notifyPending(obj, property) {
     var callbacks = obj[property];
@@ -120,129 +75,111 @@ Chunk.prototype.summarize = function() {
 exports.Chunk = Chunk;
 
 // ---------------------------------------------------------------------------
-var ManagedFileDescriptor = function(fd) {
-    this._fd = fd;
-    this._users = 0;
-    this._handles = [];
-    this._closing = false;
-}
 
-var handleId = 0;
+var DEFAULT_REGION_OPTIONS = {
+    sync : false,
+    writable : false,
+    indexCache : true,
+    indexCheck : false
+};
 
-var RESET_OWNER = function() { "RESET_OWNER" };
-
-ManagedFileDescriptor.prototype.use = function() {
-    if (this._closing) {
-	throw new Error("Descriptor is closing!");
-    }
-    var curFd = this._fd;
-    var that = this;
-    var curId = ++handleId;
-    var func = function(arg, other) {
-	if (arg == RESET_OWNER) {
-	    that = other;
-	} else if (arg == false) {
-	    //util.log("Releasing handle " + curId + " " + curFd);
-	    if (curFd != null) {
-		that._release(func);
-	    }
-	    curFd = null;
+var createOptions = function(defaults, opts) {
+    var result = {};
+    for (var k in Object.keys(defaults)) {
+	var d = defaults[k];
+	var o = (opts == null) ? null : opts[k];
+	if (o != null) {
+	    result[k] = o;
 	} else {
-	    if (curFd == null) {
-		throw new Error("Null file descriptor!!");
-	    }
-	    return curFd; 
+	    result[k] = d;
 	}
     }
-    ++this._users;
-    // util.log("Created handle " + handleId + " " + curFd + " " + Object.keys(this._handles).length);
-    this._handles.push(func);
-    return func;
+    return result;
 }
 
-ManagedFileDescriptor.prototype._release = function(func) {
-    var handles = this._handles;
-    for (var i = 0; i < handles.length; ++i) {
-	if (handles[i] == func) {
-	    handles.splice(i, 1);
-	    --this._users;
-	    if (this._users == 0) {
-		if (this._closing) {
-		    fs.close(this._fd);
-		    this._fd = null;
-		}
-	    }
+var Region = function(path, opts) {
+    var options = createOptions(DEFAULT_REGION_OPTIONS, opts);
+    this._options = options;
+    this.path = path;
+    this._changeSerial = 0;
+    this._indexSerial = 0;
+    this.writable = Boolean(options.writable);
+    this.sync = Boolean(options.sync);
+    this.indexCache = Boolean(options.indexCache);
+    this.indexCheck = Boolean(options.indexCheck);
+    
+}
+
+Region.prototype.open = function(callback) {
+    if (this._fd != null) {
+	// Already open!
+	callback(null, this);
+	return;
+    }
+    if (this._openPending) {
+	this._openPending.push(callback);
+	return;
+    }
+    this._openPending = [ callback ];
+
+    var that = this;
+
+    var openCallback = function(err, fd) {
+	if (err) {
+	    notifyPending(that, '_openPending', err);
+	} else {
+	    // Update the change serial to invalidate cache assumptions
+	    that._changeSerial++;
+	    that._fd = fd;
+	    notifyPending(that, '_openPending', null, that);
+	}
+    }
+
+    try {
+	var flags = this.sync ? "rs" : "r";
+	if (this.writable) { flags = flags + "+"; }
+	fs.open(this.path, flags, openCallback);
+    } catch (e) {
+	notifyPending(this, '_openPending', e);
+    }
+}
+
+var loadIndexCallback = function(that, reqSerial, err, buf) {
+    if (err) {
+	notifyPending(that, '_indexLoading', err);
+	return;
+    }
+    if (buf != null && reqSerial == that._changeSerial) {
+	// The result IS useful
+	if (that.indexCache) {
+	    that._index = buf;
+	    that._indexSerial = reqSerial;
+	}
+	notifyPending(that, '_indexLoading', null, buf);
+	return;
+    }
+    // Otherwise need to (re) fetch
+    var fd = that._fd;
+    if (fd == null) {
+	that.open(function(err, self) {
+	    loadIndexCallback(that, null, err);
+	});
+	return;
+    }
+
+    var indexBuf = new Buffer(BLOCK_SIZE * 2);
+    var serial = that._changeSerial;
+    iohelpers.readFully(fd, 0, indexBuf, function(err, buf) {
+	loadIndexCallback(that, serial, err, buf);
+    });
+}
+
+Region.prototype.getIndex = function(callback) {
+    if (this._index && this.indexCache) {
+	if (this._indexSerial == this._changeSerial) {
+	    callback(null, this._index);
 	    return;
 	}
-    }
-    throw new Error("Attemped to remove unknown handle");
-}
-
-ManagedFileDescriptor.prototype.replace = function(fd) {
-    if (this._users > 0) {
-	var replacement = new ManagedFileDescriptor(this._fd);
-	var handles = this._handles;
-
-	replacement._users = this._users;
-	replacement._handles = handles;
-
-	this._users = null;
-	this._handles = [];
-
-	for (var i = 0; i < handles.length; ++i) {
-	    handles[i](RESET_OWNER, replacement);
-	}
-	replacement.close();
-    } else if (this._fd != null) {
-	this.close();
-    }
-    this._fd = fd;
-    this._closing = false;
-}
-
-ManagedFileDescriptor.prototype.close = function () {
-    if (this._fd == null) { return; }
-    this._closing = true;
-    if (this.users > 0) { return; }
-    var fd = this._fd;
-    this._fd = null;
-    fs.close(fd);
-}
-
-ManagedFileDescriptor.prototype.isOpen = function() {
-    return ((!this._closing) && (this._fd != null));
-}
-
-
-// ---------------------------------------------------------------------------
-
-var RegionFile = function(filename) {
-    this.filename = filename;
-}
-
-// TODO revisit this, make it more awesome (asynchronous?)
-RegionFile.prototype._getFileHandle = function() {
-    var mfd = this._managedFd;
-    if (mfd && mfd.isOpen()) {
-	return mfd.use();
-    }
-
-    var path = this.filename;
-    var that = this;
-    var fd = fs.openSync(path,  "r");
-    if (mfd) {
-	mfd.replace(fd);
-    } else {
-	mfd = new ManagedFileDescriptor(fd);
-	this._managedFd = mfd;
-    }
-    return mfd.use();
-}
-
-RegionFile.prototype.getIndex = function(callback) {
-    if (this._index) {
-	callback(null, this._index);
-	return;
     }
 
     if (this._indexLoading) {
@@ -251,68 +188,114 @@ RegionFile.prototype.getIndex = function(callback) {
     }
 
     this._indexLoading = [ callback ];
-    var that = this;
+    loadIndexCallback(this);
+}
 
-    var indexBuf = new Buffer(BLOCK_SIZE * 2);
-    var handle = this._getFileHandle();
-    readFully(handle(), 0, indexBuf, function(err, buf) {
-	handle(false);
-	if (err) {
-	    notifyPending(that, '_indexLoading', err);
+Region.prototype.getIndexEntry = function(x, z, callback) {
+    if (callback == null) {
+	callback = z;
+	z = null;
+    }
+    if (z == null) {
+	x = Math.floor(Number(x));
+	if (x < 0 || x >= BLOCK_CHUNKS) {
+	    callback(new RangeError("Block index '" + x + "' out of range"));
+	    return;
 	}
-	that._index = buf;
-	notifyPending(that, '_indexLoading', null, buf);
-    });
+    } else {
+	x = Number(x);
+	x = (x == null) ? -1 : Math.floor(x);
+	if (x < 0 || x >= CHUNK_EDGE_SIZE) {
+	    callback(new RangeError("Block X index '" + x + "' out of range"));
+	    return;
+	}
+	z = Number(z);
+	z = (z == null) ? -1 : Math.floor(z);
+	if (z < 0 || z >= CHUNK_EDGE_SIZE) {
+	    callback(new RangeError("Block Z index '" + z + "' out of range"));
+	    return;
+	}
+	x += (z * 32);
+    }
+
+    // TODO consider if it's faster to do two small reads
+    // instead of the whole index when the cache is off
+    this.getIndex(
+	function(err, index) {
+	    if (err) {
+		callback(err);
+		return;
+	    }
+
+	    var entry = index.readInt32BE(x * 4);
+	    var entryTime = index.readInt32BE(x * 4 + BLOCK_SIZE);
+	    callback(null, entry, entryTime);
+	});
+}
+
+Region.prototype.getRawEntryData = function(entry, entryTime, callback) {
+    if (entry == 0) {
+	// No data
+	callback(null, null, entryTime);
+	return;
+    }
+
+    var fd = this._fd;
+    if (fd == null) {
+	var that = this;
+	this.open(function(err) {
+	    if (err) {
+		callback(err);
+	    } else {
+		that.getRawEntryData(entry, entryTime, callback);
+	    }
+	});
+	return;
+    }
+
+    var entryOffset = (entry >>> 8);
+    var entryBlocks = (entry & 0x0ff);
+    try {
+	var entryBuffer = new Buffer(entryBlocks * BLOCK_SIZE);
+	// util.log("FD " + fd + " Index: " + x + " Entry: " + entry + " Offset: " + entryOffset + " Size: " + entryBlocks);
+	iohelpers.readFully(fd, entryOffset * BLOCK_SIZE, entryBuffer,
+			    function(err, buf) {
+				if (err) {
+				    callback(err);
+				    return;
+				}
+				callback(null, entryBuffer, entryTime);
+			    });
+    } catch(e) {
+	callback(e);
+    }
+
 }
 
 // TODO consider caching these buffers?
-RegionFile.prototype.getRawChunkData = function(x, z, callback) {
+Region.prototype.getRawChunkData = function(x, z, callback) {
     if (callback == null) {
 	callback = z;
-	z = 0;
-    } else {
-	x += z * 32;
+	z = null;
     }
 
-    var handle = this._getFileHandle();
-
-    this.getIndex(function(err, index) {
-	if (err) {
-	    handle(false);
-	    callback(err);
-	    return;
-	}
-
-	var entry = index.readInt32BE(x * 4);
-	if (entry == 0) {
-	    // No data
-	    handle(false);
-	    callback(null);
-	    return;
-	}
-	var entryTime = index.readInt32BE(x * 4 + BLOCK_SIZE);
-	var entryOffset = (entry >>> 8);
-	var entryBlocks = (entry & 0x0ff);
-	var entryBuffer = new Buffer(entryBlocks * BLOCK_SIZE);
-	// util.log("FD " + fd + " Index: " + x + " Entry: " + entry + " Offset: " + entryOffset + " Size: " + entryBlocks);
-	readFully(handle(), entryOffset * BLOCK_SIZE, entryBuffer,
-		  function(err, buf) {
-		      handle(false);
-		      if (err) {
-			  callback(err);
-			  return;
-		      }
-		      callback(null, entryBuffer, entryTime);
-		  });
-    });
+    var that = this;
+    this.getIndexEntry(x, z,
+	function(err, entry, entryTime) {
+	    if (err) {
+		callback(err);
+		return;
+	    }
+	    that.getRawEntryData(entry, entryTime, callback);
+	});
 }
 
-RegionFile.prototype.getChunkStream = function(x, z, callback) {
+Region.prototype.getChunkStream = function(x, z, callback) {
     if (callback == null) {
 	callback = z;
-	z = 0;
+	z = null;
     }
-   var dataCallback = function(err, data, time) {
+    var dataCallback = function(err, data, time) {
 	if (err) {
 	    callback(err);
 	}
@@ -341,10 +324,10 @@ RegionFile.prototype.getChunkStream = function(x, z, callback) {
     this.getRawChunkData(x, z, dataCallback);
 }
 
-RegionFile.prototype.getChunkObject = function(x, z, callback) {
+Region.prototype.getChunkObject = function(x, z, callback) {
     if (callback == null) {
 	callback = z;
-	z = 0;
+	z = null;
     }
 
     var tagReader;
@@ -397,28 +380,65 @@ RegionFile.prototype.getChunkObject = function(x, z, callback) {
 			});
 };
 
-RegionFile.prototype.forAllChunks = function(iterator, callback) {
+Region.prototype.getChunk = function(x, z, callback) {
+    if (callback == null) {
+	callback = z;
+	z = null;
+    }
+    this.getChunkObject(x, z,
+			function(err, chunkObj, chunkTime) {
+	if (err) {
+	    callback(err);
+	} else if (chunkObj == null) {
+	    callback(null, null, chunkTime);
+	} else {
+	    try {
+		var chunk = new Chunk(chunkObj, chunkTime);
+	    } catch (e) {
+		callback(e);
+		return;
+	    }
+	    callback(null, chunk, chunkTime);
+	}
+    });
+}
+
+Region.prototype.forAllChunks = function(iterator, callback) {
     var curIndex = -1;
     var that = this;
 
     var next;
+    var failed = false;
     var chunkCallback = function(err, chunk, chunkTime) {
+	if (failed) {
+	    if (err) {
+		util.log("Ignoring extra error: " + err);
+	    }
+	    return;
+	}
 	if (err) { 
+	    failed = true;
 	    // util.log("Failed chunk - calling back: " + JSON.stringify(err));
-	    throw new Error("BROKE HERE");
 	    callback(err); 
 	    return;
 	}
 	if (chunk) {
-	    iterator(new Chunk(chunk, chunkTime), next);
+	    iterator(chunk, next);
 	    return;
 	}
 	// util.log("No chunk for " + curIndex);
 	next();
     }
     var next = function(err) {
+	if (failed) {
+	    if (err) {
+		util.log("Ignoring extra error: " + err);
+	    }
+	    return;
+	}
 	if (err) { 
 	    // util.log("Failed next - calling back");
+	    failed = true;
 	    callback(err); 
 	    return;
 	}
@@ -428,17 +448,44 @@ RegionFile.prototype.forAllChunks = function(iterator, callback) {
 	    callback();
 	    return;
 	}
-	that.getChunkObject(curIndex, chunkCallback);
+	that.getChunk(curIndex, chunkCallback);
     }
     next();
 }
 
-RegionFile.prototype.close = function() {
-    if (!this._managedFd) { return; }
-    this._managedFd.close();
+Region.prototype.close = function() {
+    if (this._fd == null) { return; }
+    var fd = this._fd;
+    this._fd = null;
+    try {
+	fs.close(fd);
+    } catch (e) {
+	util.log("WARNING: Close failed: " + e);
+    }
 }
 
-exports.RegionFile = RegionFile;
+// Alright, now to think about region changes. Assuming everyone is well
+// behaved these fall in to the following pattern..
+//
+// INDEX REVIEW - Determine where the change is going to happen
+// FILE CHANGE - Modify the chunk, but not the index
+// INDEX CHANGE - Modify the index to reflect the file change
+//
+// During the INDEX REVIEW nothing else should be blocked, but other
+// region changes should wait because they're planning their next move
+//
+// During the FILE CHANGE there needs to be coordination with anything
+// reading the part of the file that's changing (and any other changes
+// are still blocked).
+//
+// During the INDEX CHANGE nobody can use the index, but possibly the rest of
+// the file is alright.
+//
+// I wonder if this can be built atop a more generalized block reservation
+// scheme since it's really just about the IO and not so much the regionness.
+
+
+exports.Region = Region;
 
 // ---------------------------------------------------------------------------
 
@@ -505,13 +552,17 @@ Dimension.prototype.getIndex = function(callback) {
     });
 }
 
-Dimension.prototype._loadRegionFile = function(rFile, callback) {
+Dimension.prototype._loadRegion = function(rFile, opts, callback) {
     // TODO use path module
     var path = this._root + "/region/" + rFile;
-    callback(null, new RegionFile(path));
+    callback(null, new Region(path, opts));
 }
 
-Dimension.prototype.getRegion = function(x, z, callback) {
+Dimension.prototype.openRegion = function(x, z, opts, callback) {
+    if (callback == null) {
+	callback = opts;
+	opts = null
+    }
     var that = this;
     x = Number(x);
     z = Number(z);
@@ -527,11 +578,17 @@ Dimension.prototype.getRegion = function(x, z, callback) {
 	    callback(null);
 	    return;
 	}
-	that._loadRegionFile(rFile, callback);
+	that._loadRegion(rFile, opts, callback);
     });
 }
 
-Dimension.prototype.forAllRegions = function(iterator, callback) {
+Dimension.prototype.forAllRegions = function(opts, iterator, callback) {
+    if (arguments.length < 3) {
+	callback = iterator;
+	iterator = opts;
+	opts = null;
+    }
+
     var cx, cz, index;
     var that = this;
     var iterNext;
@@ -562,7 +619,7 @@ Dimension.prototype.forAllRegions = function(iterator, callback) {
 	    }
 	    var rFile = xmap[cz];
 	    if (rFile) {
-		that._loadRegionFile(rFile, doThis);
+		that._loadRegion(rFile, opts, doThis);
 		return;
 	    }
 	}
@@ -585,7 +642,17 @@ Dimension.prototype.forAllRegions = function(iterator, callback) {
     });
 }
 
-Dimension.prototype.forAllRegions2 = function(iterator, callback, limit) {
+Dimension.prototype.forAllRegions2 = function(opts, iterator, callback, limit) {
+    if (arguments.length < 3) {
+	callback = iterator;
+	iterator = opts;
+	opts = null;
+    } else if (arguments.length == 3 && typeof(callback) == 'number') {
+	limit = callback;
+	callback = iterator;
+	iterator = opts;
+	opts = null;
+    }
     var that = this;
 
     var fileList;
@@ -596,12 +663,13 @@ Dimension.prototype.forAllRegions2 = function(iterator, callback, limit) {
     var next = function(err) {
 	--pending;
 	if (err) {
-	    if (!error) {
+	    if (error == null) {
 		// This is the first error
 		error = err;
 		fileList = [];
 	    } else {
-		util.log("Ignoring subsequent error: " + JSON.stringify(err));
+		util.log("Ignoring subsequent error: " + err);
+		util.log(err.stack);
 	    }
 	}
 	if (pending == 0 && fileList.length == 0) {
@@ -624,7 +692,7 @@ Dimension.prototype.forAllRegions2 = function(iterator, callback, limit) {
 	while (pending < limit && fileList.length > 0) {
 	    var todo = fileList.shift();
 	    ++pending;
-	    that._loadRegionFile(todo, doRegion);
+	    that._loadRegion(todo, opts, doRegion);
 	}
     }
 

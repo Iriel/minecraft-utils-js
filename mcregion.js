@@ -200,7 +200,8 @@ var MANMADE_NETHER_BLOCKS = {
 
 function netherBlockCheck(err, blocks) {
     if (err) {
-	util.error("FAILED: " + JSON.stringify(err));
+	util.log("FAILED: " + err);
+	util.log(err.stack);
 	return;
     }
     for (var i = 0; i < blocks.length; ++i) {
@@ -281,7 +282,8 @@ repl.context.countBlocks = countBlocks;
 
 findNaturalChunks(nether, NATURAL_NETHER_BLOCKS, function(err, result) {
     if (err) {
-	util.error("FAILED: " + JSON.stringify(err));
+	util.log("FAILED: " + err);
+	util.log(err.stack);
 	return;
     }
     console.log(JSON.stringify(result));
