@@ -4,7 +4,7 @@
 var fs = require('fs');
 var util = require('util');
 var tagio = require('./minecraft-tagio');
-var iohelpers = require('./iohelpers');
+var blockfile = require('./blockfile');
 var zlib = require('zlib');
 
 // Region IO Experimeents
@@ -101,8 +101,8 @@ var Region = function(path, opts) {
     var options = createOptions(DEFAULT_REGION_OPTIONS, opts);
     this._options = options;
     this.path = path;
-    this._changeSerial = 0;
-    this._indexSerial = 0;
+    this._indexSerial = -1;
+    this._changeSerial = -1;
     this.writable = Boolean(options.writable);
     this.sync = Boolean(options.sync);
     this.indexCache = Boolean(options.indexCache);
@@ -111,7 +111,7 @@ var Region = function(path, opts) {
 }
 
 Region.prototype.open = function(callback) {
-    if (this._fd != null) {
+    if (this._blockfile != null) {
 	// Already open!
 	callback(null, this);
 	return;
@@ -128,9 +128,16 @@ Region.prototype.open = function(callback) {
 	if (err) {
 	    notifyPending(that, '_openPending', err);
 	} else {
-	    // Update the change serial to invalidate cache assumptions
-	    that._changeSerial++;
-	    that._fd = fd;
+	    // Pass the index serial to invalidate cache assumptions
+	    var newSerial = that._indexSerial + 1;
+	    if (newSerial <= that._changeSerial) {
+		newSerial = that._changeSerial + 1;
+	    }
+	    that._blockfile = new blockfile.BlockFile(fd, {
+		blockSize : BLOCK_SIZE,
+		writable : that.writable,
+		initSerial : newSerial
+	    });
 	    notifyPending(that, '_openPending', null, that);
 	}
     }
@@ -144,44 +151,46 @@ Region.prototype.open = function(callback) {
     }
 }
 
-var loadIndexCallback = function(that, reqSerial, err, buf) {
+var loadIndexCallback = function(that, err, buf, serial) {
     if (err) {
 	notifyPending(that, '_indexLoading', err);
 	return;
     }
-    if (buf != null && reqSerial == that._changeSerial) {
+    if (buf != null 
+	&& serial >= that._changeSerial
+	&& serial >= that._indexSerial) {
 	// The result IS useful
 	if (that.indexCache) {
 	    that._index = buf;
-	    that._indexSerial = reqSerial;
+	    that._indexSerial = serial;
 	}
 	notifyPending(that, '_indexLoading', null, buf);
 	return;
+    } else if (buf == null 
+	       && that.indexCache && serial == that._indexSerial
+	       && serial <= that._changeSerial) {
+	buf = that._index;
+	if (buf != null) {
+	    notifyPending(that, '_indexLoading', null, buf);
+	    return;
+	}
     }
     // Otherwise need to (re) fetch
-    var fd = that._fd;
-    if (fd == null) {
+    var file = that._blockfile;
+    if (file == null) {
 	that.open(function(err, self) {
 	    loadIndexCallback(that, null, err);
 	});
 	return;
     }
-
-    var indexBuf = new Buffer(BLOCK_SIZE * 2);
-    var serial = that._changeSerial;
-    iohelpers.readFully(fd, 0, indexBuf, function(err, buf) {
-	loadIndexCallback(that, serial, err, buf);
+    var needSerial = that.indexCache ? that._indexSerial : null;
+    // util.log("Requesting index; needSerial " + needSerial + " buf " + Boolean(buf) + " serial " + serial);;
+    file.readIfChanged(0, 2, needSerial, function(err, buf, newSerial) {
+	loadIndexCallback(that, err, buf, newSerial);
     });
 }
 
 Region.prototype.getIndex = function(callback) {
-    if (this._index && this.indexCache) {
-	if (this._indexSerial == this._changeSerial) {
-	    callback(null, this._index);
-	    return;
-	}
-    }
-
     if (this._indexLoading) {
 	this._indexLoading.push(callback);
 	return;
@@ -240,8 +249,8 @@ Region.prototype.getRawEntryData = function(entry, entryTime, callback) {
 	return;
     }
 
-    var fd = this._fd;
-    if (fd == null) {
+    var file = this._blockfile;
+    if (file== null) {
 	var that = this;
 	this.open(function(err) {
 	    if (err) {
@@ -256,16 +265,14 @@ Region.prototype.getRawEntryData = function(entry, entryTime, callback) {
     var entryOffset = (entry >>> 8);
     var entryBlocks = (entry & 0x0ff);
     try {
-	var entryBuffer = new Buffer(entryBlocks * BLOCK_SIZE);
-	// util.log("FD " + fd + " Index: " + x + " Entry: " + entry + " Offset: " + entryOffset + " Size: " + entryBlocks);
-	iohelpers.readFully(fd, entryOffset * BLOCK_SIZE, entryBuffer,
-			    function(err, buf) {
-				if (err) {
-				    callback(err);
-				    return;
-				}
-				callback(null, entryBuffer, entryTime);
-			    });
+	file.read(entryOffset, entryBlocks, 
+		  function(err, buf) {
+		      if (err) {
+			  callback(err);
+			  return;
+		      }
+		      callback(null, buf, entryTime);
+		  });
     } catch(e) {
 	callback(e);
     }
