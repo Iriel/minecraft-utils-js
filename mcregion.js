@@ -97,25 +97,26 @@ function countBlocks(dimension, callback) {
     var result = {};
     function chunkCallback(chunk, next) {
 	var sections = chunk._level.Sections;
-	var myBlocks = {};
+	var myBlocks = new Array(256);
 	for (var i = 0; i < sections.length; ++i) {
 	    var section = sections[i];
 	    var blocks = section.Blocks;
 	    for (var j = 0; j < blocks.length; ++j) {
-		var id = blocks.readInt8(j) & 0x0ff;
+		var id = blocks[j] & 0x0ff;
 		myBlocks[id] = (myBlocks[id] || 0) + 1;
 	    }
 	}
-	var keys = Object.keys(myBlocks);
-	for (var i = 0; i < keys.length; ++i) {
-	    var id = keys[i];
-	    var data = result[id];
-	    if (!data) {
-		data = { id: id, count: 0, chunks : 0 }
-		result[id] = data;
+	for (var id = 0; id < 256; ++id) {
+	    var cnt = myBlocks[id];
+	    if (cnt) {
+		var data = result[id];
+		if (!data) {
+		    data = { id: id, count: 0, chunks : 0 }
+		    result[id] = data;
+		}
+		data.count += cnt;
+		data.chunks++;
 	    }
-	    data.count += myBlocks[id];
-	    data.chunks++;
 	}
 	next();
     }
@@ -255,7 +256,7 @@ function findNaturalChunks(dimension, naturalBlocks, callback) {
 	    var section = sections[i];
 	    var blocks = section.Blocks;
 	    for (var j = 0; j < blocks.length; ++j) {
-		var id = blocks.readInt8(j) & 0x0ff;
+		var id = blocks[j] & 0x0ff;
 		if (!naturalBlocks[id]) {
 		    console.log("KEEP [" + x + "," + z + "]");
 		    next();
@@ -318,4 +319,6 @@ repl.context.countBlocks = countBlocks;
 });
 */
 
-    countBlocks(nether, netherBlockCheck);
+countBlocks(nether, netherBlockCheck);
+countBlocks(world, netherBlockCheck);
+countBlocks(theend, netherBlockCheck);

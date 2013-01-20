@@ -7,7 +7,8 @@ var tagio = require('./minecraft-tagio');
 var fs = require('fs');
 var zlib = require('zlib');
 
-var fd = fs.openSync('testdata/NextEdenReal/CogRail3/players/Yssaril.dat', 'r');
+//var fd = fs.openSync('testdata/NextEdenReal/CogRail3/players/Yssaril.dat', 'r');
+var fd = fs.openSync('testdata/NextEdenReal/CogRail3/data/villages.dat', 'r');
 var tagReader = fs.createReadStream(null, {fd:fd}).pipe(zlib.createGunzip()).pipe(new tagio.TagReader());
 
 var booleanConverter = {
