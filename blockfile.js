@@ -62,6 +62,16 @@ var BlockFile = function(fd, opts) {
     // write completes
     this._wLocks = [];
     this._serial = initSerial;
+    this._initSerial = initSerial;
+}
+
+// TODO consider the relative merits of doing this asynchronously
+BlockFile.prototype.getCurrentSerial = function() {
+    return this._serial;
+}
+
+BlockFile.prototype.getReadDefaultSerial = function() {
+    return this._initSerial;
 }
 
 // Read length blocks, starting at block index, invoking the callback
@@ -70,7 +80,7 @@ var BlockFile = function(fd, opts) {
 // index - block offset (integer >= 0)
 // length - block count (integer > 0)
 // oldSerial - old serial, null for none
-// callback(err, buffer, serial);
+// callback(err, buffer, blocksStartSerial, fileEndSerial);
 BlockFile.prototype.readIfChanged = function(index, length, oldSerial, callback) {
     if (!isInteger(index) || index < 0) {
 	callback(new Error('Index ' + index
@@ -101,18 +111,17 @@ BlockFile.prototype.readIfChanged = function(index, length, oldSerial, callback)
 
     // Otherwise get and check serial, and if needed, lock the read
     const serials = this._serials;
-    const serial = this._serial;
-    var curSerial = -1;
+    const defaultSerial = this.getReadDefaultSerial();
+    var blockStartSerial = -1;
     for (i = index; i < indexLim; ++i) {
 	var ser = serials[i];
 	if (ser == null) {
-	    ser = serial;
-	    serials[i] = ser;
+	    ser = defaultSerial;
 	}
-	if (ser > curSerial) { curSerial = ser; }
+	if (ser > blockStartSerial) { blockStartSerial = ser; }
     }
-    if (oldSerial == curSerial) {
-	callback(null, null, curSerial);
+    if (oldSerial == blockStartSerial) {
+	callback(null, null, blockStartSerial, that.getCurrentSerial());
 	return;
     }
 
@@ -126,6 +135,7 @@ BlockFile.prototype.readIfChanged = function(index, length, oldSerial, callback)
     }
     
     var readCallback = function(err, buffer) {
+	var endSerial = that.getCurrentSerial();
 	var checkWrites = false;
 	for (var i = index; i < indexLim; ++i) {
 	    var cur = readLocks[i];
@@ -143,7 +153,7 @@ BlockFile.prototype.readIfChanged = function(index, length, oldSerial, callback)
 	if (checkWrites) {
 	    that._checkWrites();
 	}
-	callback(err, buffer, curSerial);
+	callback(err, buffer, blockStartSerial, endSerial);
     }
     iohelpers.readFully(this.fd, 
 			index * blockSize, buffer, readCallback);
@@ -159,6 +169,7 @@ BlockFile.prototype.read = function(index, length, callback) {
     this.readIfChanged(index, length, null, callback);
 }
 
+// callback(err, wrote, serial);
 BlockFile.prototype.writeUnlessChanged = function(index, buffer, checkSerial, callback) {
     if (!this.writable) {
 	callback(new Error("Block file is not writable"));
@@ -184,14 +195,14 @@ BlockFile.prototype.writeUnlessChanged = function(index, buffer, checkSerial, ca
 	}
 
 	const serials = that._serials;
-	var serial = that._serial;
+	const defaultSerial = that.getReadDefaultSerial();
 	if (checkSerial != null) {
 	    // Check the serial number
 	    var curSerial = -1;
 	    for (i = index; i < indexLim; ++i) {
 		var ser = serials[i];
 		if (ser == null) {
-		    ser = serial;
+		    ser = defaultSerial;
 		}
 		if (ser > curSerial) { curSerial = ser; }
 	    }
@@ -202,7 +213,7 @@ BlockFile.prototype.writeUnlessChanged = function(index, buffer, checkSerial, ca
 	    }
 	}
 	// Increment serial before the change
-	serial = ++that._serial;
+	var serial = ++that._serial;
 	for (i = index; i < indexLim; ++i) {
 	    serials[i] = serial;
 	}
@@ -210,14 +221,14 @@ BlockFile.prototype.writeUnlessChanged = function(index, buffer, checkSerial, ca
 	iohelpers.writeFully(that.fd,
 			     index * blockSize, buffer,
 			     function(err) {
+				 serial = ++that._serial;
+				 for (i = index; i < indexLim; ++i) {
+				     serials[i] = serial;
+				 }
 				 next();
 				 if (err) {
 				     callback(err);
 				     return;
-				 }
-				 serial = ++that._serial;
-				 for (i = index; i < indexLim; ++i) {
-				     serials[i] = serial;
 				 }
 				 callback(null, true, serial);
 			     });
@@ -255,7 +266,6 @@ BlockFile.prototype._checkWrites = function() {
     while (writeLocks.length > 0) {
 	var firstWrite = writeLocks[0];
 	if (firstWrite[2] == null) {
-	    util.log("Write already in progress...");
 	    // Write in progress
 	    return;
 	}
@@ -263,7 +273,6 @@ BlockFile.prototype._checkWrites = function() {
 	var indexLim = firstWrite[1];
 	for (var i = index; i < indexLim; ++i) {
 	    if (readLocks[i]) {
-		util.log("First write still read blocked");
 		// Still blocked;
 		return;
 	    }
@@ -275,7 +284,6 @@ BlockFile.prototype._checkWrites = function() {
 		util.log("Strange, completed write not at front");
 		return;
 	    }
-	    util.log("Removed self from write queue");
 	    writeLocks.shift();
 	    that._checkWrites();
 	    for (var i = 3; i < firstWrite.length; ++i) {

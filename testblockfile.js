@@ -18,13 +18,14 @@ util.log("Queuing series...");
 async.series(
     [
 	function(callback) {
-	    file.read(0, 1, function(err, buf, serial) {
+	    file.read(0, 1, function(err, buf, serial, fileSerial) {
 		if (err) {
-		    callback(null, 'Failed as expected: ' + err);
+		    callback(null, 'Success: Error as expected: ' + err);
 		    return;
 		}
 		callback(new Error("Expected failure, got buf: " + buf
-				   + "; serial: " + serial));
+				   + "; serial: " + serial
+				   + "; fileSerial: " + fileSerial));
 	    });
 	},
 
@@ -45,12 +46,13 @@ async.series(
 	},
 
 	function(callback) {
-	    file.read(1, 1, function(err, buf, serial) {
+	    file.read(1, 1, function(err, buf, serial, fileSerial) {
 		if (err) {
 		    callback(err);
 		    return;
 		}
-		callback(null, "got buf: " + buf + "; serial: " + serial);
+		callback(null, "got buf: " + buf + "; serial: " + serial
+				   + "; fileSerial: " + fileSerial);
 	    });
 	},
 
@@ -71,12 +73,24 @@ async.series(
 	},
 
 	function(callback) {
-	    file.read(0, 2, function(err, buf, serial) {
+	    file.read(0, 2, function(err, buf, serial, fileSerial) {
 		if (err) {
 		    callback(err);
 		    return;
 		}
-		callback(null, "got buf: " + buf + "; serial: " + serial);
+		callback(null, "got buf: " + buf + "; serial: " + serial
+				   + "; fileSerial: " + fileSerial);
+	    });
+	},
+
+	function(callback) {
+	    file.read(1, 1, function(err, buf, serial, fileSerial) {
+		if (err) {
+		    callback(err);
+		    return;
+		}
+		callback(null, "got buf: " + buf + "; serial: " + serial
+				   + "; fileSerial: " + fileSerial);
 	    });
 	},
 

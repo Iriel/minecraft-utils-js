@@ -1,7 +1,6 @@
 // Minecraft stuff
 // Daniel Stephens (iriel@iriel.org), Jan 2013
 
-var fs = require('fs');
 var util = require('util');
 var region = require('./minecraft-region');
 
@@ -161,6 +160,7 @@ var NATURAL_NETHER_BLOCKS = {
     40 : "Mushroom (red)",
 
     51 : "Fire",
+    52 : "Monster Spawner",
 
     87 : "Netherrack",
     88 : "Soul Sand",
@@ -173,15 +173,35 @@ var NATURAL_NETHER_BLOCKS = {
 }
 
 var MANMADE_NETHER_BLOCKS = {
+    1 : "Smooth Stone",
+    2 : "Grass",
+    3 : "Dirt",
     4 : "Cobblestone",
+
+    12 : "Sand",
+    17 : "Wood",
+    18 : "Leaves",
 
     20 : "Glass",
     27 : "Powered Rail",
 
-    44 : "Stone Slab",
-    50 : "Torch",
+    37 : "Yellow Flower",
+    38 : "Red Flower",
 
+    43 : "Double Slabs",
+    44 : "Stone Slab",
+    49 : "Obsidian",
+
+    50 : "Torch",
+    54 : "Chest",
+
+    58 : "Crafting Table",
+
+    61 : "Furnace",
+    62 : "Furnace (Lit)",
     63 : "Sign (Block)",
+    64 : "Wooden Door",
+    65 : "Ladder",
 
     66 : "Rail",
     67 : "Cobblestone Stairs",
@@ -192,10 +212,17 @@ var MANMADE_NETHER_BLOCKS = {
     76 : "Redstone Torch (on)",
     77 : "Button (Stone)",
 
+    80 : "Snow Block",
+    85 : "Fence",
+
+    90 : "Nether Portal",
     98 : "Stone Brick",
 
     101 : "Iron Bars",
-    102 : "Glass Pane"
+    102 : "Glass Pane",
+    109 : "Stone Brick Stairs",
+
+    130 : "Ender Chest",
 }
 
 function netherBlockCheck(err, blocks) {
@@ -280,7 +307,7 @@ repl.context.forAllDimensionChunks = forAllDimensionChunks;
 repl.context.countBlocks = countBlocks;
 */
 
-findNaturalChunks(nether, NATURAL_NETHER_BLOCKS, function(err, result) {
+/*findNaturalChunks(nether, NATURAL_NETHER_BLOCKS, function(err, result) {
     if (err) {
 	util.log("FAILED: " + err);
 	util.log(err.stack);
@@ -289,3 +316,6 @@ findNaturalChunks(nether, NATURAL_NETHER_BLOCKS, function(err, result) {
     console.log(JSON.stringify(result));
     countBlocks(nether, netherBlockCheck);
 });
+*/
+
+    countBlocks(nether, netherBlockCheck);

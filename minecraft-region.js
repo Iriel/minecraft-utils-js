@@ -75,6 +75,58 @@ Chunk.prototype.summarize = function() {
 exports.Chunk = Chunk;
 
 // ---------------------------------------------------------------------------
+var RegionIndex = function(buf, serial) {
+    Object.defineProperty(this, '_buf', 
+			       { enumerable : false, value: buf,  writable: false });
+    Object.defineProperty(this, 'serial', 
+			       { enumerable : true, value: serial,  writable: false });
+}
+
+RegionIndex.prototype.getBufferCopy = function() {
+    var buf = this._buf;
+    var copy = new Buffer(buf.length);
+    buf.copy(copy);
+    return copy;
+}
+
+RegionIndex.prototype.toString = function() {
+    var result = "RegionIndex{" + this.serial + "}:";
+    var buf = this._buf;
+    for (var i = 0; i < BLOCK_CHUNKS; ++i) {
+	var entry = buf.readUInt32BE(i * 4);
+	var entryTime = buf.readUInt32BE(i * 4 + BLOCK_SIZE);
+	var entryOffset = (entry >>> 8);
+	var entryBlocks = (entry & 0x0ff);
+	if (entry == 0 && entryTime == 0) { continue; }
+	var x = i % CHUNK_EDGE_SIZE;
+	var z = (i - x) / CHUNK_EDGE_SIZE;
+	result = result + "\n  [" + x + "," + z + "]\t"
+	    + entryOffset + "\t" + entryBlocks + "\t"
+	    + new Date(entryTime * 1000);
+    }
+    return result;
+}
+
+RegionIndex.prototype.get = function(x, z) {
+    var idx;
+    if (z == null) {
+	idx = x;
+    } else {
+	idx = x + z * CHUNK_EDGE_SIZE;
+    }
+    var index = this._buf;
+    var entry = index.readUInt32BE(x * 4);
+    var entryTime = index.readUInt32BE(x * 4 + BLOCK_SIZE);
+    if (entry == null) {
+	return [ entryTime ];
+    } else {
+	var entryOffset = (entry >>> 8);
+	var entryBlocks = (entry & 0x0ff);
+	return [ entryTime, entryOffset, entryBlocks ];
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 var DEFAULT_REGION_OPTIONS = {
     sync : false,
@@ -85,7 +137,9 @@ var DEFAULT_REGION_OPTIONS = {
 
 var createOptions = function(defaults, opts) {
     var result = {};
-    for (var k in Object.keys(defaults)) {
+    var keys = Object.keys(defaults);
+    for (var i = 0; i < keys.length; ++i) {
+	var k = keys[i];
 	var d = defaults[k];
 	var o = (opts == null) ? null : opts[k];
 	if (o != null) {
@@ -129,10 +183,12 @@ Region.prototype.open = function(callback) {
 	    notifyPending(that, '_openPending', err);
 	} else {
 	    // Pass the index serial to invalidate cache assumptions
-	    var newSerial = that._indexSerial + 1;
+	    var newSerial = that._indexSerial;
 	    if (newSerial <= that._changeSerial) {
-		newSerial = that._changeSerial + 1;
+		newSerial = that._changeSerial;
 	    }
+	    // TODO make this more definite
+	    newSerial += 1000;
 	    that._blockfile = new blockfile.BlockFile(fd, {
 		blockSize : BLOCK_SIZE,
 		writable : that.writable,
@@ -151,7 +207,7 @@ Region.prototype.open = function(callback) {
     }
 }
 
-var loadIndexCallback = function(that, err, buf, serial) {
+var loadIndexCallback = function(that, err, buf, serial, fileSerial) {
     if (err) {
 	notifyPending(that, '_indexLoading', err);
 	return;
@@ -159,19 +215,20 @@ var loadIndexCallback = function(that, err, buf, serial) {
     if (buf != null 
 	&& serial >= that._changeSerial
 	&& serial >= that._indexSerial) {
+	var index = new RegionIndex(buf, serial);
 	// The result IS useful
 	if (that.indexCache) {
-	    that._index = buf;
+	    that._index = index;
 	    that._indexSerial = serial;
 	}
-	notifyPending(that, '_indexLoading', null, buf);
+	notifyPending(that, '_indexLoading', null, index, fileSerial);
 	return;
     } else if (buf == null 
 	       && that.indexCache && serial == that._indexSerial
 	       && serial <= that._changeSerial) {
-	buf = that._index;
-	if (buf != null) {
-	    notifyPending(that, '_indexLoading', null, buf);
+	var index = that._index;
+	if (index != null) {
+	    notifyPending(that, '_indexLoading', null, index, fileSerial);
 	    return;
 	}
     }
@@ -183,11 +240,13 @@ var loadIndexCallback = function(that, err, buf, serial) {
 	});
 	return;
     }
-    var needSerial = that.indexCache ? that._indexSerial : null;
-    // util.log("Requesting index; needSerial " + needSerial + " buf " + Boolean(buf) + " serial " + serial);;
-    file.readIfChanged(0, 2, needSerial, function(err, buf, newSerial) {
-	loadIndexCallback(that, err, buf, newSerial);
-    });
+    var needSerial = (that.indexCache && that.__index != null) ? that._indexSerial : null;
+    /* util.log("Requesting index; needSerial " + needSerial + " buf " + Boolean(buf) + " serial " + serial);; */
+    file.readIfChanged(0, 2, needSerial,
+		       function(err, buf, newSerial, fileSerial) {
+			   loadIndexCallback(that, err, buf,
+					     newSerial, fileSerial);
+		       });
 }
 
 Region.prototype.getIndex = function(callback) {
@@ -227,6 +286,8 @@ Region.prototype.getIndexEntry = function(x, z, callback) {
 	x += (z * 32);
     }
 
+    // util.log("getting index entry for " + x);
+
     // TODO consider if it's faster to do two small reads
     // instead of the whole index when the cache is off
     this.getIndex(
@@ -235,15 +296,13 @@ Region.prototype.getIndexEntry = function(x, z, callback) {
 		callback(err);
 		return;
 	    }
-
-	    var entry = index.readInt32BE(x * 4);
-	    var entryTime = index.readInt32BE(x * 4 + BLOCK_SIZE);
-	    callback(null, entry, entryTime);
+	    var entry = index.get(x);
+	    callback(null, entry[0], entry[1], entry[2]);
 	});
 }
 
-Region.prototype.getRawEntryData = function(entry, entryTime, callback) {
-    if (entry == 0) {
+Region.prototype.getRawEntryData = function(entryTime, offset, blocks, callback) {
+    if (!offset || !blocks) {
 	// No data
 	callback(null, null, entryTime);
 	return;
@@ -256,16 +315,14 @@ Region.prototype.getRawEntryData = function(entry, entryTime, callback) {
 	    if (err) {
 		callback(err);
 	    } else {
-		that.getRawEntryData(entry, entryTime, callback);
+		that.getRawEntryData(entryTime, offset, blocks, callback);
 	    }
 	});
 	return;
     }
 
-    var entryOffset = (entry >>> 8);
-    var entryBlocks = (entry & 0x0ff);
     try {
-	file.read(entryOffset, entryBlocks, 
+	file.read(offset, blocks, 
 		  function(err, buf) {
 		      if (err) {
 			  callback(err);
@@ -288,12 +345,12 @@ Region.prototype.getRawChunkData = function(x, z, callback) {
 
     var that = this;
     this.getIndexEntry(x, z,
-	function(err, entry, entryTime) {
+	function(err, entryTime, offset, blocks) {
 	    if (err) {
 		callback(err);
 		return;
 	    }
-	    that.getRawEntryData(entry, entryTime, callback);
+	    that.getRawEntryData(entryTime, offset, blocks, callback);
 	});
 }
 
@@ -458,6 +515,65 @@ Region.prototype.forAllChunks = function(iterator, callback) {
 	that.getChunk(curIndex, chunkCallback);
     }
     next();
+}
+
+// TODO Consistency update on index vs x,z
+// TODO consider correct balance of serials
+//
+//  perhaps writeRawChunkData(idx, ...) writeRawChunkDataXZ(x, z, ...)
+//  etc
+Region.prototype.writeRawChunkData = function(idx, data, entryTime, callback) {
+    if (callback == null) {
+	callback = entryTime;
+	entryTIme = null;
+    }
+    if (!this.writable) {
+	callback(new Error("This region is not writable"));
+	return;
+    }
+    if (entryTime == null) {
+	entryTime = Math.floor(Date.now() / 1000);
+    } else if (util.isDate(entryTime)) {
+	entryTime = Math.floor(entryTime.getTime() / 1000);
+    } else {
+	entryTime = Math.floor(Number(entryTime) || 0);
+    }
+
+    util.log("Preparing to write " + idx + " " + entryTime);
+
+    var that = this;
+
+    var indexWriteCallback = function(err, wrote, serial) {
+	callback(err, wrote, serial);
+    }
+
+    this.getIndex(function(err, index, fileSerial) {
+	if (err) {
+	    callback(err); return;
+	}
+	util.log("Got index: serial: " + index.serial
+		 + ": fileSerial: " + fileSerial);
+
+	// TODO possible serial abort here
+
+	if (data == null) {
+	    // Special case, no blocks or block offset.
+	    var entry = index.get(idx);
+	    if (entry[0] == entryTime && !entry[1]) {
+		callback(null, fileSerial);
+		return;
+	    }
+	    util.log("Only need to update index...");
+	    var buf = index.getBufferCopy();
+	    buf.writeUInt32BE(0, idx * 4);
+	    buf.writeUInt32BE(entryTime, idx * 4 + BLOCK_SIZE);
+	    that._blockfile.writeUnlessChanged(0, buf, index.serial,
+					       indexWriteCallback);
+	    return;
+	}
+	callback(new Error("Not Yet Implemented"));
+    });
+
 }
 
 Region.prototype.close = function() {
