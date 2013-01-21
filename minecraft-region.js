@@ -107,6 +107,18 @@ RegionIndex.prototype.toString = function() {
     return result;
 }
 
+RegionIndex.prototype.hasChunk = function(x, z) {
+    var idx;
+    if (z == null) {
+	idx = x;
+    } else {
+	idx = x + z * CHUNK_EDGE_SIZE;
+    }
+    var index = this._buf;
+    var entry = index.readUInt32BE(idx * 4);
+    return (entry != 0); 
+}
+
 RegionIndex.prototype.get = function(x, z) {
     var idx;
     if (z == null) {
@@ -115,9 +127,9 @@ RegionIndex.prototype.get = function(x, z) {
 	idx = x + z * CHUNK_EDGE_SIZE;
     }
     var index = this._buf;
-    var entry = index.readUInt32BE(x * 4);
-    var entryTime = index.readUInt32BE(x * 4 + BLOCK_SIZE);
-    if (entry == null) {
+    var entry = index.readUInt32BE(idx * 4);
+    var entryTime = index.readUInt32BE(idx * 4 + BLOCK_SIZE);
+    if (entry == 0) {
 	return [ entryTime ];
     } else {
 	var entryOffset = (entry >>> 8);
@@ -151,7 +163,7 @@ var createOptions = function(defaults, opts) {
     return result;
 }
 
-var Region = function(path, opts) {
+var Region = function(path, x, z, opts) {
     var options = createOptions(DEFAULT_REGION_OPTIONS, opts);
     this._options = options;
     this.path = path;
@@ -161,7 +173,10 @@ var Region = function(path, opts) {
     this.sync = Boolean(options.sync);
     this.indexCache = Boolean(options.indexCache);
     this.indexCheck = Boolean(options.indexCheck);
-    
+    this.xSize = CHUNK_EDGE_SIZE;
+    this.zSize = CHUNK_EDGE_SIZE;
+    this.regionX = x; // Region within dimension
+    this.regionZ = z; // Region within dimension
 }
 
 Region.prototype.open = function(callback) {
@@ -662,7 +677,9 @@ Dimension.prototype.getIndex = function(callback) {
 		xMap = {};
 		map[x] = xMap;
 	    }
-	    xMap[z] = file;
+	    var entry = { x : x, z : z, name : file };
+	    xMap[z] = entry;
+	    map[file] = entry;
 	}
 
 	map.minX = minX,
@@ -677,8 +694,13 @@ Dimension.prototype.getIndex = function(callback) {
 
 Dimension.prototype._loadRegion = function(rFile, opts, callback) {
     // TODO use path module
-    var path = this._root + "/region/" + rFile;
-    callback(null, new Region(path, opts));
+    var entry = this._index[rFile];
+    if (!entry) {
+	callback("No region for " + rFile);
+    } else {
+	var path = this._root + "/region/" + entry.name;
+	callback(null, new Region(path, entry.x, entry.z, opts));
+    }
 }
 
 Dimension.prototype.openRegion = function(x, z, opts, callback) {
@@ -696,12 +718,12 @@ Dimension.prototype.openRegion = function(x, z, opts, callback) {
 	    callback(null);
 	    return;
 	}
-	var rFile = xMap[z];
-	if (!rFile) {
+	var entry = xMap[z];
+	if (!entry) {
 	    callback(null);
 	    return;
 	}
-	that._loadRegion(rFile, opts, callback);
+	that._loadRegion(entry.name, opts, callback);
     });
 }
 
@@ -740,9 +762,9 @@ Dimension.prototype.forAllRegions = function(opts, iterator, callback) {
 		    if (xmap) { break; }
 		}
 	    }
-	    var rFile = xmap[cz];
-	    if (rFile) {
-		that._loadRegion(rFile, opts, doThis);
+	    var entry = xmap[cz];
+	    if (entry) {
+		that._loadRegion(entry.name, opts, doThis);
 		return;
 	    }
 	}
@@ -829,8 +851,8 @@ Dimension.prototype.forAllRegions2 = function(opts, iterator, callback, limit) {
 	    var xMap = index[cx];
 	    if (!xMap) { continue; }
 	    for (var cz = index.minZ; cz <= index.maxZ; ++cz) {
-		var rFile = xMap[cz];
-		if (rFile) { allFiles.push(rFile); }
+		var entry = xMap[cz];
+		if (entry) { allFiles.push(entry.name); }
 	    }
 	}
 	fileList = allFiles;
