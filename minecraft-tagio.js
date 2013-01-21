@@ -199,7 +199,7 @@ TagReader.prototype._readString = function() {
     var limit = this._limit;
     // Insufficient data for the length
     if (pos > (limit - 2)) { return; }
-    var strBytes = buffer.readInt16BE(pos);
+    var strBytes = buffer.readUInt16BE(pos);
     // Insufficient data for the length + string
     if (pos > (limit - (2 + strBytes))) { return; }
     var str = (strBytes == 0) ? "" : buffer.toString('utf8', pos + 2, pos + 2 + strBytes);
@@ -207,9 +207,7 @@ TagReader.prototype._readString = function() {
     return str;
 }
 
-// TODO re-document helper protocon
-const STALLED = false;
-
+// TODO re-document helper protocol
 var TAG_TYPE_HELPERS = {};
 var AddTypeHelper = function(type, helperFactory) {
     var helper = helperFactory();
@@ -233,12 +231,12 @@ var selectTagTypeHelper = function(tagType) {
 }
 
 var ReadNamedTagHelper = function() { }
-ReadNamedTagHelper.prototype.consume = function(reader, buffer, child) {
+ReadNamedTagHelper.prototype.consume = function(reader, buffer, limit, child) {
     if (child) {
 	this.value = child.createEntry(reader, this.id);
 	return;
     }
-    if (reader._pos >= reader._limit) { return STALLED; }
+    if (reader._pos >= limit) { return false; }
     var tagType = buffer[reader._pos++];
     if (tagType == 0) {
 	// END TAG - terminates map.
@@ -248,7 +246,7 @@ ReadNamedTagHelper.prototype.consume = function(reader, buffer, child) {
     if (id == null) {
 	// Unable to consume string, must put back the tag type
 	--reader._pos;
-	return STALLED;
+	return false;
     }
     this.id = id;
     return selectTagTypeHelper(tagType);
@@ -258,20 +256,32 @@ ReadNamedTagHelper.prototype.toString = function() { return 'ReadNamedTagHelper'
 AddTypeHelper(TAG_TYPE_OBJECT, function() {
     var ObjectHelper = function() {
 	this.entries = [];
+	this.entryId = null;
     }
     ObjectHelper.prototype.createEntry = function(reader, id) {
 	return reader.createObjectValue(id, this.entries);
     }
-    ObjectHelper.prototype.consume = function(reader, buffer, child) {
+    ObjectHelper.prototype.consume = function(reader, buffer, limit, child) {
 	if (child) {
-	    var value = child.value;
-	    if (value == null) {
-		return;
-	    }
+	    var value = child.createEntry(reader, this.entryId);
+	    this.entryId = null;
 	    this.entries.push(value);
 	}
-	return new ReadNamedTagHelper();
+	if (reader._pos >= limit) { return false; }
+	var tagType = buffer[reader._pos++];
+	if (tagType == 0) {
+	    return;
+	}
+	var id = reader._readString();
+	if (id == null) {
+	    // Unable to consume string, must put back the tag type
+	    --reader._pos;
+	    return false;
+	}
+	this.entryId = id;
+	return selectTagTypeHelper(tagType);
     }
+
     return ObjectHelper;
 });
 
@@ -283,7 +293,7 @@ AddTypeHelper(TAG_TYPE_LIST, function() {
 	return reader.createListValue(id, type, this.values);
     }
 
-    ListHelper.prototype.consume = function(reader, buffer, child) {
+    ListHelper.prototype.consume = function(reader, buffer, limit, child) {
 	if (child) {
 	    var value = child.value;
 	    if (!value) {
@@ -292,11 +302,11 @@ AddTypeHelper(TAG_TYPE_LIST, function() {
 	    this.values[this.index++] = value;
 	}
 	if (!this.tagType) {
-	    if (reader._pos >= reader._limit) { return STALLED; }
+	    if (reader._pos >= limit) { return false; }
 	    this.tagType = buffer[reader._pos++];
 	}
 	if (this.length == null) {
-	    if ((reader._pos + 4) > reader._limit) { return STALLED; }
+	    if ((reader._pos + 4) > limit) { return false; }
 	    var length = buffer.readInt32BE(reader._pos);
 	    this.length = length;
 	    this.values = new Array(length);
@@ -318,19 +328,21 @@ AddTypeHelper(TAG_TYPE_BYTE_ARRAY, function() {
     ByteArrayHelper.prototype.createEntry = function(reader, id) {
 	return reader.createByteArrayValue(id, this.buffer);
     }
-    ByteArrayHelper.prototype.consume = function(reader, buffer, child) {
+    ByteArrayHelper.prototype.consume = function(reader, buffer, limit, child) {
 	if (!this.buffer) {
-	    if ((reader._pos + 4) > reader._limit) { return STALLED; }
+	    if ((reader._pos + 4) > limit) { return false; }
 	    var length = buffer.readInt32BE(reader._pos);
 	    this.buffer = new Buffer(length);
 	    this.pos = 0;
 	    reader._pos += 4;
 	}
 
-	while (this.pos < this.buffer.length) {
-	    if (reader._pos >= reader._limit) { return STALLED; }
+	var len = this.buffer.length;
+
+	while (this.pos < len) {
+	    if (reader._pos >= limit) { return false; }
 	    var needed = this.buffer.length - this.pos;
-	    var avail = reader._limit - reader._pos;
+	    var avail = limit - reader._pos;
 	    var toCopy = (needed < avail) ? needed : avail;
 	    buffer.copy(this.buffer, this.pos, reader._pos, reader._pos + toCopy);
 	    this.pos += toCopy;
@@ -347,19 +359,21 @@ AddTypeHelper(TAG_TYPE_INT_ARRAY, function() {
     IntArrayHelper.prototype.createEntry = function(reader, id) {
 	return reader.createIntArrayValue(id, this.buffer);
     }
-    IntArrayHelper.prototype.consume = function(reader, buffer, child) {
+    IntArrayHelper.prototype.consume = function(reader, buffer, limit, child) {
 	if (!this.buffer) {
-	    if ((reader._pos + 4) > reader._limit) { return STALLED; }
+	    if ((reader._pos + 4) > limit) { return false; }
 	    var length = buffer.readInt32BE(reader._pos);
 	    this.buffer = new Buffer(length * 4);
 	    this.pos = 0;
 	    reader._pos += 4;
 	}
 
-	while (this.pos < this.buffer.length) {
-	    if (reader._pos >= reader._limit) { return STALLED; }
+	var len = this.buffer.length;
+
+	while (this.pos < len) {
+	    if (reader._pos >= limit) { return false; }
 	    var needed = this.buffer.length - this.pos;
-	    var avail = reader._limit - reader._pos;
+	    var avail = limit - reader._pos;
 	    var toCopy = (needed < avail) ? needed : avail;
 	    buffer.copy(this.buffer, this.pos, reader._pos, reader._pos + toCopy);
 	    this.pos += toCopy;
@@ -375,9 +389,9 @@ AddTypeHelper(TAG_TYPE_INT, function() {
     IntHelper.prototype.createEntry = function(reader, id) {
 	return { id : id, type : TAG_TYPE_INT, value : this.value };
     }
-    IntHelper.prototype.consume = function(reader, buffer) {
+    IntHelper.prototype.consume = function(reader, buffer, limit) {
 	var pos = reader._pos;
-	if (pos + 4 > reader._limit) { return STALLED; }
+	if (pos + 4 > limit) { return false; }
 	this.value = buffer.readInt32BE(pos);
 	reader._pos += 4;
     }
@@ -389,9 +403,9 @@ AddTypeHelper(TAG_TYPE_SHORT, function() {
     ShortHelper.prototype.createEntry = function(reader, id) {
 	return { id : id, type : TAG_TYPE_SHORT, value : this.value };
     }
-    ShortHelper.prototype.consume = function(reader, buffer) {
+    ShortHelper.prototype.consume = function(reader, buffer, limit) {
 	var pos = reader._pos;
-	if (pos + 2 > reader._limit) { return STALLED; }
+	if (pos + 2 > limit) { return false; }
 	this.value = buffer.readInt16BE(pos);
 	reader._pos += 2;
     }
@@ -403,9 +417,9 @@ AddTypeHelper(TAG_TYPE_BYTE, function() {
     ByteHelper.prototype.createEntry = function(reader, id) {
 	return { id : id, type : TAG_TYPE_BYTE, value : this.value };
     }
-    ByteHelper.prototype.consume = function(reader, buffer) {
+    ByteHelper.prototype.consume = function(reader, buffer, limit) {
 	var pos = reader._pos;
-	if (pos + 1 > reader._limit) { return STALLED; }
+	if (pos + 1 > limit) { return false; }
 	this.value = buffer[pos]
 	reader._pos += 1;
     }
@@ -418,9 +432,9 @@ AddTypeHelper(TAG_TYPE_DOUBLE, function() {
     DoubleHelper.prototype.createEntry = function(reader, id) {
 	return { id : id, type : TAG_TYPE_DOUBLE, value : this.value };
     }
-    DoubleHelper.prototype.consume = function(reader, buffer) {
+    DoubleHelper.prototype.consume = function(reader, buffer, limit) {
 	var pos = reader._pos;
-	if (pos + 8 > reader._limit) { return STALLED; }
+	if (pos + 8 > limit) { return false; }
 	this.value = buffer.readDoubleBE(pos);
 	reader._pos += 8;
     }
@@ -432,9 +446,9 @@ AddTypeHelper(TAG_TYPE_FLOAT, function() {
     FloatHelper.prototype.createEntry = function(reader, id) {
 	return { id : id, type : TAG_TYPE_FLOAT, value : this.value };
     }
-    FloatHelper.prototype.consume = function(reader, buffer) {
+    FloatHelper.prototype.consume = function(reader, buffer, limit) {
 	var pos = reader._pos;
-	if (pos + 4 > reader._limit) { return STALLED; }
+	if (pos + 4 > limit) { return false; }
 	this.value = buffer.readFloatBE(pos);
 	reader._pos += 4;
     }
@@ -446,9 +460,9 @@ AddTypeHelper(TAG_TYPE_LONG, function() {
     LongHelper.prototype.createEntry = function(reader, id) {
 	return { id : id, type : TAG_TYPE_LONG, value : this.value };
     }
-    LongHelper.prototype.consume = function(reader, buffer) {
+    LongHelper.prototype.consume = function(reader, buffer, limit) {
 	var pos = reader._pos;
-	if (pos + 8 > reader._limit) { return STALLED; }
+	if (pos + 8 > limit) { return false; }
 	var hiVal = buffer.readInt32BE(pos);
 	var loVal = buffer.readInt32BE(pos + 4);
 	// TODO worry about overflow??
@@ -463,9 +477,9 @@ AddTypeHelper(TAG_TYPE_STRING, function() {
     StringHelper.prototype.createEntry = function(reader, id) {
 	return { id : id, type : TAG_TYPE_STRING, value : this.value };
     }
-    StringHelper.prototype.consume = function(reader, buffer) {
+    StringHelper.prototype.consume = function(reader, buffer, limit) {
 	var str = reader._readString();
-	if (str == null) { return STALLED; }
+	if (str == null) { return false; }
 	this.value = str;
     }
     return StringHelper;
@@ -480,23 +494,26 @@ TagReader.prototype._consume = function() {
     while (true) {
 	var helper;
 	if (helpers.length == 0) {
-	    this._curtask = null;
 	    var pending = this._pending;
-	    if (pending.length == 0) {
-		return this._pos >= this._limit;
+	    if (this._curtask) {
+		pending.shift();
 	    }
-	    helper = pending.shift();
+	    if (pending.length == 0) {
+		this._curtask = false;
+		return this._pos >= limit;
+	    }
+	    helper = pending[0];
+	    this._curtask = true;
 	    child = null;
-	    this._curtask = helper;
 	} else {
 	    helper = helpers.pop();
 	}
-	while (helper != null) {
+	while (true) {
 	    /*util.log("Invoking helper: " + helper
 		     + "; child: " + child + " " + JSON.stringify(child)
-		     + "; pos: " + this._pos);   */
-	    var next = helper.consume(this, buffer, child);
-	    if (next == false) { 
+		     + "; pos: " + this._pos + "; limit: " + limit);   */
+	    var next = helper.consume(this, buffer, limit, child);
+	    if (next === false) { 
 		// Stall
 		helpers.push(helper);
 		if (this._ended) {
@@ -526,12 +543,10 @@ TagReader.prototype._fail = function(error) {
     //util.log("Signaling failure: " + error);
     if (!error) { error = "TagReader: Failed"; }
     this._failed = error;
+    this._curtask = false;
     this.writable = false;
-    if (this._curtask) {
-	this._curtask.error(error);
-    }
     while (this._pending.length > 1) {
-	var handler = this._pending.unshift();
+	var handler = this._pending.shift();
 	handler.error(error);
     }
     this.emit('error', 'Failed');
@@ -541,7 +556,7 @@ var ReadValueHelper = function(callback) {
     this.callback = callback;
 }
 
-ReadValueHelper.prototype.consume = function(reader, buffer, child) {
+ReadValueHelper.prototype.consume = function(reader, buffer, limit, child) {
     if (child) {
 	this.callback(null, child.value);
 	return;
@@ -551,7 +566,7 @@ ReadValueHelper.prototype.consume = function(reader, buffer, child) {
 	    this.callback(null, null);
 	    return;
 	}
-	return STALLED;
+	return false;
     }
     return new ReadNamedTagHelper();
 }
@@ -581,7 +596,7 @@ var ReadObjectHelper = function(callback) {
     this.callback = callback;
 }
 
-ReadObjectHelper.prototype.consume = function(reader, buffer, child) {
+ReadObjectHelper.prototype.consume = function(reader, buffer, limit, child) {
     if (child) {
 	var value = child.value;
 	if (value == null) {
@@ -596,7 +611,7 @@ ReadObjectHelper.prototype.consume = function(reader, buffer, child) {
 	    this.callback(null, null);
 	    return;
 	}
-	return STALLED;
+	return false;
     }
     var nextTagType = buffer[reader._pos];
     if (nextTagType != TAG_TYPE_OBJECT.id) {
