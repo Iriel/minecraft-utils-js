@@ -178,15 +178,18 @@ const defaultListFactory = function(entryType, entries) {
     return { type : entryType.getListType(), value : entries }
 }
 
-var TagReader = function() {
+var TagReader = function(opts) {
+    if (opts == null) {
+	opts = {};
+    }
     this.writable = true;
     this._limit = 0;
     this._pos = 0;
     this._helpers = [];
     this._states = [];
     this._pending = [];
-    this.createObjectValue = defaultObjectFactory;
-    this.createListValue = defaultListFactory;
+    this.createObjectValue = opts.objectFactory || defaultObjectFactory;
+    this.createListValue = opts.listFactory || defaultListFactory;
 }
 
 util.inherits(TagReader, Stream);
