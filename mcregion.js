@@ -229,7 +229,9 @@ var MANMADE_NETHER_BLOCKS = {
 function netherBlockCheck(err, blocks) {
     if (err) {
 	util.log("FAILED: " + err);
-	util.log(err.stack);
+	if (err.stack) {
+	    util.log(err.stack);
+	}
 	return;
     }
     for (var i = 0; i < blocks.length; ++i) {

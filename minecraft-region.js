@@ -413,7 +413,7 @@ Region.prototype.getChunkObject = function(x, z, callback) {
     var obj;
     var objTime;
 
-    var objCallback = function(err, object, name) {
+    var objCallback = function(err, object, entry) {
 	if (err) {
 	    //util.log("Failed to get chunk object");
 	    callback(err);
@@ -431,7 +431,7 @@ Region.prototype.getChunkObject = function(x, z, callback) {
 	    return;
 	}
 
-	if (name != '') {
+	if (entry.id != '') {
 	    //util.log("Got named chunk object");
 	    callback(new Error("Chunk object is unexpectedly named '" + name + "'"));
 	    return;
@@ -814,7 +814,9 @@ Dimension.prototype.forAllRegions2 = function(opts, iterator, callback, limit) {
 		fileList = [];
 	    } else {
 		util.log("Ignoring subsequent error: " + err);
-		util.log(err.stack);
+		if (err.stack) {
+		    util.log(err.stack);
+		}
 	    }
 	}
 	if (pending == 0 && fileList.length == 0) {
