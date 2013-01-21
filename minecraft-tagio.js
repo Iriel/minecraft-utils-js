@@ -134,12 +134,12 @@ const defaultListFactory = function(id, entryType, entries) {
     return { id : id, type : entryType.getListType(), value : entries }
 }
 
-const defaultByteArrayFactory = function(id, data) {
-    return { id : id, type : TAG_TYPE_BYTE_ARRAY, value : data }
+const defaultByteArrayFactory = function(id, dataBuffer) {
+    return { id : id, type : TAG_TYPE_BYTE_ARRAY, value : dataBuffer }
 }
 
-const defaultIntArrayFactory = function(id, data) {
-    return { id : id, type : TAG_TYPE_INT_ARRAY, value : data }
+const defaultIntArrayFactory = function(id, dataBuffer) {
+    return { id : id, type : TAG_TYPE_INT_ARRAY, value : dataBuffer }
 }
 
 var TagReader = function(opts) {
@@ -169,16 +169,23 @@ TagReader.prototype.write = function(buffer) {
 	throw new Error("TagREader: Only buffers are supported");
     }
 
-    if (this._limit > this._pos) {
+    var limit = this._limit;
+    var pos = this._pos;
+    var myBuffer = false;
+
+    if (limit > pos) {
 	// Must join remaining buffer with new one
-	var remaining = this._limit - this._pos;
+	var remaining = limit - pos;
 	var newBuffer = new Buffer(buffer.length + remaining);
 	// Must specify end point since we might have been constrained
-	this._buffer.copy(newBuffer, 0, this._pos, this._pos + remaining);
+	// console.log("Merging buffer: " + pos + " " + limit + " " + buffer.length + " " + myBuffer);
+	this._buffer.copy(newBuffer, 0, pos, pos + remaining);
 	buffer.copy(newBuffer, remaining, 0);
+	myBuffer = true;
 	buffer = newBuffer;
     }
     this._buffer = buffer;
+    this._myBuffer = myBuffer;
     this._limit = buffer.length;
     this._pos = 0;
 
@@ -329,6 +336,8 @@ AddTypeHelper(TAG_TYPE_LIST, function() {
     return ListHelper;
 });
 
+//var bufferStats = {};
+
 AddTypeHelper(TAG_TYPE_BYTE_ARRAY, function() {
     var ByteArrayHelper = function() { };
 
@@ -342,6 +351,9 @@ AddTypeHelper(TAG_TYPE_BYTE_ARRAY, function() {
 	    if ((reader._pos + 4) > limit) { return false; }
 	    len = buffer.readInt32BE(reader._pos);
 	    this.buffer = (arrBuffer = new Buffer(len));
+
+	    // bufferStats[len] = (bufferStats[len] || 0) + 1;
+
 	    this.pos = (pos = 0);
 	    reader._pos += 4;
 	} else{
@@ -377,6 +389,9 @@ AddTypeHelper(TAG_TYPE_INT_ARRAY, function() {
 	    if ((reader._pos + 4) > limit) { return false; }
 	    len = buffer.readInt32BE(reader._pos) * 4;
 	    this.buffer = (arrBuffer = new Buffer(len));
+
+	    // bufferStats[len] = (bufferStats[len] || 0) + 1;
+
 	    this.pos = (pos = 0);
 	    reader._pos += 4;
 	} else{
@@ -665,3 +680,8 @@ TagReader.prototype.readObject = function(callback) {
 }
 
 exports.TagReader = TagReader;
+
+/* process.on('exit', function() {
+    util.log(JSON.stringify(bufferStats));
+}); */
+
