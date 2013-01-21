@@ -5,9 +5,8 @@
 
 var util = require('util');
 var Stream = require('stream').Stream;
-// var memoize = require('memoizee');
 
-// TODO add a value compatibility check function
+// TODO add a value compatibility check function??
 var TagType = function(id, label) {
     Object.defineProperty(this, 'id', { enumerable : true, value: id,  writable: false });
     Object.defineProperty(this, 'label', { enumerable: true, value: label,  writable: false });
@@ -70,99 +69,56 @@ var tagTypeForId = function(id) {
 
 exports.tagTypeForId = tagTypeForId;
 
-// ---------------------------------------------------------------------------
-
-var TagTypedEnumeration = function(type, id, label, enumerableId) {
-    if (enumerableId == null) { enumerableId = true; }
-    Object.defineProperty(this, '_tagType', { enumerable : false, value: type,  writable: false });
-    Object.defineProperty(this, 'id', { enumerable: enumerableId, value: id,  writable: false });
-    Object.defineProperty(this, 'label', { enumerable: true, value : label, writable: false });
+var getTagTypes = function() {
+    return TAG_TYPES.slice();
 }
 
-exports.TagTypedEnumeration = TagTypedEnumeration;
-
+exports.getTagTypes = getTagTypes;
 
 // ---------------------------------------------------------------------------
+// Fairly basic representation of a minecraft "Object", largely optimized for
+// JS reading. Since attempting to write to the object is going to break some
+// expectations later, the object is frozen.
 var SimpleTaggedObject = function(entries) {
-    Object.defineProperty(this, '__entries', { enumerable: false,
-					       value: entries,
-					       writable: false });
+    Object.defineProperty(this, '__entries', { value: entries });
+    var entryMap = null;
+    var getEntryMap = function() {
+	if (entryMap == null) {
+	    var map = {};
+	    for (var i = 0; i < entries.length; ++i) {
+		var ent = entries[i];
+		map[ent.id] = ent;
+	    }
+	    entryMap = map;
+	}
+	return entryMap;
+    }
+    Object.defineProperty(this, '__entryMap', { get : getEntryMap });
     for (var i = 0; i < entries.length; ++i) {
 	var ent = entries[i];
-	var id = ent.id;
-	entries[id] = ent;
-	this[id] = ent.value;
+	this[ent.id] = ent.value;
     }
+    Object.freeze(this);
 }
 
+
+SimpleTaggedObject.prototype.getEntries = function() { return this.__entries; }
+
 SimpleTaggedObject.prototype.getEntry = function(id) {
-    return this.__entries[id];
+    return this.__entryMap[id];
 }
 
 SimpleTaggedObject.prototype.getType = function(id) {
-    var ent = this.__entries[id];
+    var ent = this.__entryMap[id];
     return (ent == null) ? null : ent.type;
 }
 
 SimpleTaggedObject.prototype.getValue = function(id) {
-    var ent = this.__entries[id];
+    var ent = this.__entryMap[id];
     return (ent == null) ? null : ent.value;
 }
 
 exports.SimpleTaggedObject = SimpleTaggedObject;
-
-// ---------------------------------------------------------------------------
-// Possibly overengineered abstraction!
-
-// TODO use some kind of weak memoization on this
-var createPropertyMap =function(id) {
-    return { get : function() { return this.getValue(id); },
-	     set : function(nv) { this.setValue(id, nv); },
-	     enumerable: true };
-};
-
-var TaggedMap = function(entries) {
-    var entryMap = {};
-    Object.defineProperty(this, '__entryMap', { value: entryMap, writable: false }); 
-    Object.defineProperty(this, '__entries', { value: entries, writable: false }); 
-    for (var i = 0; i < entries.length; ++i) {
-	var ent = entries[i];
-	var id = ent.id;
-	Object.defineProperty(this, id, createPropertyMap(id));
-	entryMap[id] = ent;
-    }
-}
-
-TaggedMap.prototype.getValue = function(id) {
-    var ent = this.__entryMap[id];
-    var conv = ent.conv;
-    if (conv != null) {
-	return conv.onGet(ent.value, ent.type)
-    } else {
-	return ent.value;
-    }
-}
-
-TaggedMap.prototype.setValue = function(id, val) {
-    var ent = this.__entryMap[id];
-    // TODO check type!!!!
-    // TODO reverse conversion
-    ent.value = val;
-}
-
-TaggedMap.prototype.getType = function(id) {
-    var ent = this.__entryMap[id];
-    return (ent == null) ? null : ent.type;
-}
-
-TaggedMap.prototype.getEntry = function(id) {
-    return this.__entryMap[id];
-}
-TaggedMap.prototype.getEntries = function() {
-    return this.__entries;
-}
-
-exports.TaggedMap = TaggedMap;
 
 // ---------------------------------------------------------------------------
 //
@@ -178,6 +134,14 @@ const defaultListFactory = function(entryType, entries) {
     return { type : entryType.getListType(), value : entries }
 }
 
+const defaultByteArrayFactory = function(data) {
+    return { type : TAG_TYPE_BYTE_ARRAY, value : data }
+}
+
+const defaultIntArrayFactory = function(data) {
+    return { type : TAG_TYPE_INT_ARRAY, value : data }
+}
+
 var TagReader = function(opts) {
     if (opts == null) {
 	opts = {};
@@ -190,6 +154,8 @@ var TagReader = function(opts) {
     this._pending = [];
     this.createObjectValue = opts.objectFactory || defaultObjectFactory;
     this.createListValue = opts.listFactory || defaultListFactory;
+    this.createByteArrayValue = opts.byteArrayFactory || defaultByteArrayFactory;
+    this.createIntArrayValue = opts.intArrayFactory || defaultIntArrayFactory;
 }
 
 util.inherits(TagReader, Stream);
@@ -341,7 +307,8 @@ AddTypeHelper(TAG_TYPE_LIST,
 		  }
 		  if (mode == MODE_RETURNED || state.length == 0) {
 		      if (mode == MODE_RETURNED) {
-			  // TODO consider testing result type?
+			  /* Can trust the result type since we dispatched a
+			   * type-specific helper. */
 			  state.values[state.index++] = value.value;
 		      }
 		      if (state.index == state.length) {
@@ -378,7 +345,7 @@ AddTypeHelper(TAG_TYPE_BYTE_ARRAY, function(reader, buffer, mode, state, value) 
 	state.pos += toCopy;
 	reader._pos += toCopy;
     }
-    return { result : { type : TAG_TYPE_BYTE_ARRAY, value : state.buffer } };
+    return { result : reader.createByteArrayValue(state.buffer) };
 });
 
 AddTypeHelper(TAG_TYPE_INT_ARRAY, function(reader, buffer, mode, state, value) {
@@ -407,7 +374,7 @@ AddTypeHelper(TAG_TYPE_INT_ARRAY, function(reader, buffer, mode, state, value) {
 	state.pos += toCopy;
 	reader._pos += toCopy;
     }
-    return { result : { type : TAG_TYPE_INT_ARRAY, value : state.buffer } };
+    return { result : reader.createIntArrayValue(state.buffer) };
 });
 
 AddTypeHelper(TAG_TYPE_INT, function(reader, buffer, mode, state, value) {
@@ -499,21 +466,17 @@ TagReader.prototype._consume = function() {
 		     + "; state: " + ((state && state.state) ? "(recursive)" : JSON.stringify(state))
 		     + "; value: " + JSON.stringify(value)
 		     + "; pos: " + this._pos); */
-	    var result = helper(this, buffer, mode, state, value);
-	    var initValue;
-	    if (util.isArray(result)) {
-		throw new Error('UNCONVERTED HELPER DISCOVERED');
-	    }
-	    if (result.next) {
+	    var response = helper(this, buffer, mode, state, value);
+	    if (response.next) {
 		helpers.push(helper);
-		states.push(result.state);
-		helper = result.next;
+		states.push(response.state);
+		helper = response.next;
 		mode = MODE_START;
-		value = result.initValue;
+		value = response.initValue;
 		state = null;
-	    } else if (result.stalled) {
+	    } else if (response.stalled) {
 		helpers.push(helper);
-		states.push(result.state);
+		states.push(response.state);
 		if (this._ended) {
 		    this._fail('EOF during parse');
 		    return false;
@@ -523,7 +486,7 @@ TagReader.prototype._consume = function() {
 		return true;
 	    } else {
 		mode = MODE_RETURNED;
-		value = result.result;
+		value = response.result;
 		/* util.log("Helper returned; value: " + JSON.stringify(value)); */
 		helper = null;
 		state = null;
