@@ -5,7 +5,7 @@ var region = require('./minecraft-region');
 var async = require('async');
 
 
-var region = new region.Region('testdata/testregion.mca', { writable : true });
+var region = new region.Region('testdata/testregion.mca', 0, 0, { writable : true });
 var regionIndex;
 var regionEntry;
 var regionData;

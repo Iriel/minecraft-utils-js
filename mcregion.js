@@ -2,11 +2,11 @@
 // Daniel Stephens (iriel@iriel.org), Jan 2013
 
 var util = require('util');
-var region = require('./minecraft-region');
+var minecraft = require('./minecraft');
 
-var world =  new region.Dimension('testdata/NextEdenReal/CogRail3/');
-var nether = new region.Dimension('testdata/NextEdenReal/CogRail3/DIM-1');
-var theend = new region.Dimension('testdata/NextEdenReal/CogRail3/DIM1');
+var world =  new minecraft.Dimension('testdata/NextEdenReal/CogRail3/');
+var nether = new minecraft.Dimension('testdata/NextEdenReal/CogRail3/DIM-1');
+var theend = new minecraft.Dimension('testdata/NextEdenReal/CogRail3/DIM1');
 
 var showResult = function(err, result) {
     if (err) {
