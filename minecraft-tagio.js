@@ -6,21 +6,24 @@
 var util = require('util');
 var Stream = require('stream').Stream;
 
-// TODO add a value compatibility check function??
-var TagType = function(id, label) {
-    Object.defineProperty(this, 'id', { enumerable : true, value: id,  writable: false });
-    Object.defineProperty(this, 'label', { enumerable: true, value: label,  writable: false });
-    Object.defineProperty(this, "_listType", { enumerable: false, value: null, writable: true });
+var TagType = function(id, label, entryType) {
+    Object.defineProperty(this, 'id', { enumerable : true, value: id });
+    Object.defineProperty(this, 'label', { enumerable : true, value: label });
+    var listType = null;
+    var getListType = function() {
+	if (listType == null) { 
+	    listType = new TagType(9, "List of " + this.label, this);
+	}
+	return listType;
+    }
+    Object.defineProperty(this, "_listType", { get: getListType });
+    if (entryType) {
+	Object.defineProperty(this, "entryType", { enumerable : true, value : entryType });
+    }
+    Object.freeze(this);
 }
 
-TagType.prototype.getListType = function() {
-    var listType = this._listType;
-    if (!listType) { 
-	listType = new TagType(9, "List of " + this.label);
-	this._listType = listType;
-    }
-    return listType;
-}
+TagType.prototype.getListType = function() { return this._listType; }
 
 TagType.prototype.toString = function() {
     return this.label;
@@ -33,11 +36,11 @@ const TAG_TYPE_INT = new TagType(3, 'Int');
 const TAG_TYPE_LONG = new TagType(4, 'Long');
 const TAG_TYPE_FLOAT = new TagType(5, 'Float');
 const TAG_TYPE_DOUBLE = new TagType(6, 'Double');
-const TAG_TYPE_BYTE_ARRAY = new TagType(7, 'Byte Array');
+const TAG_TYPE_BYTE_ARRAY = new TagType(7, 'ByteArray');
 const TAG_TYPE_STRING = new TagType(8, 'String');
 const TAG_TYPE_LIST = new TagType(9, 'List');
 const TAG_TYPE_OBJECT = new TagType(10, 'Object');
-const TAG_TYPE_INT_ARRAY = new TagType(11, 'Int Array');
+const TAG_TYPE_INT_ARRAY = new TagType(11, 'IntArray');
 
 exports.TAG_TYPE_END = TAG_TYPE_END;
 exports.TAG_TYPE_BYTE = TAG_TYPE_BYTE;
@@ -130,8 +133,8 @@ const defaultObjectFactory = function(id, entries) {
     return { id : id, type : TAG_TYPE_OBJECT, value : new SimpleTaggedObject(entries) }
 }
 
-const defaultListFactory = function(id, entryType, entries) {
-    return { id : id, type : entryType.getListType(), value : entries }
+const defaultListFactory = function(id, entryType, values) {
+    return { id : id, type : entryType.getListType(), value : values }
 }
 
 const defaultByteArrayFactory = function(id, dataBuffer) {
@@ -166,26 +169,23 @@ util.inherits(TagReader, Stream);
 TagReader.prototype.write = function(buffer) {
     if (this._ended) { throw new Error("TagReader: write after end"); }
     if (!Buffer.isBuffer(buffer)) {
-	throw new Error("TagREader: Only buffers are supported");
+	throw new Error("TagReader: Only buffers are supported");
     }
 
     var limit = this._limit;
     var pos = this._pos;
-    var myBuffer = false;
 
     if (limit > pos) {
 	// Must join remaining buffer with new one
 	var remaining = limit - pos;
 	var newBuffer = new Buffer(buffer.length + remaining);
 	// Must specify end point since we might have been constrained
-	// console.log("Merging buffer: " + pos + " " + limit + " " + buffer.length + " " + myBuffer);
+	//console.log("Merging buffer: " + pos + " " + limit + " " + buffer.length + " " + myBuffer);
 	this._buffer.copy(newBuffer, 0, pos, pos + remaining);
 	buffer.copy(newBuffer, remaining, 0);
-	myBuffer = true;
 	buffer = newBuffer;
     }
     this._buffer = buffer;
-    this._myBuffer = myBuffer;
     this._limit = buffer.length;
     this._pos = 0;
 
@@ -239,6 +239,7 @@ var selectTagTypeHelper = function(tagType) {
 }
 
 var ReadNamedTagHelper = function() { }
+
 ReadNamedTagHelper.prototype.consume = function(reader, buffer, limit, child) {
     if (child != null) {
 	this.value = child.createEntry(reader, this.id);
@@ -422,7 +423,7 @@ AddTypeHelper(TAG_TYPE_INT, function() {
     IntHelper.prototype.consume = function(reader, buffer, limit) {
 	var pos = reader._pos;
 	var npos = pos + 4;
-	if (npos + 4 > limit) { return false; }
+	if (npos > limit) { return false; }
 	this.value = buffer.readInt32BE(pos);
 	reader._pos = npos;
     }
@@ -527,6 +528,8 @@ TagReader.prototype._consume = function() {
     var helpers = this._helpers;
     var child = null;
 
+    //util.log("_consume; " + (limit - this._pos));
+
     while (true) {
 	var helper;
 	if (helpers.length == 0) {
@@ -545,10 +548,11 @@ TagReader.prototype._consume = function() {
 	    helper = helpers.pop();
 	}
 	while (true) {
-	    /*util.log("Invoking helper: " + helper
-		     + "; child: " + child + " " + JSON.stringify(child)
+	    //util.log("Invoking helper: " + helper);
+/*		     + "; child: " + child + " " + JSON.stringify(child)
 		     + "; pos: " + this._pos + "; limit: " + limit);   */
 	    var next = helper.consume(this, buffer, limit, child);
+	    //util.log("Helper returned: " + next);
 	    if (next === false) { 
 		// Stall
 		helpers.push(helper);
@@ -566,7 +570,6 @@ TagReader.prototype._consume = function() {
 	    } else {
 		child = helper;
 		helper = null;
-		/*util.log("Helper returned: " + child + " " + JSON.stringify(child));  */
 		// Completed one iteration!
 		break;
 	    }
