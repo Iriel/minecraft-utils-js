@@ -19,7 +19,7 @@ The types of serialized values are represented by instances of the
 instead use the constants and methods provided. Each type has the following
 properties..
 
-**``id``** - The numeric tag type from the minecraft format
+**``id``** - The numeric tag type identifier from the minecraft format
 
 **``label``** - A readable String type label
 
@@ -45,6 +45,22 @@ The following type constants are defined:
     tagio.TAG_TYPE_OBJECT      // Object of named, typed, values
 
 The ``TAG_TYPE_LIST`` constant has no entry type.
+
+Function: tagTypes = tagio.getTagTypes()
+----------------------------------------
+
+* ``tagTypes`` - An array containing the standard tag types.
+
+Gets all of the standard tag types.
+
+Function: tagType = tagio.tagTypeForId(id)
+----------------------------------------
+
+* ``id`` - The numeric tag type identifier from the minecraft format.
+* ``tagType`` - The tag type for that id, or null if unknown
+
+Gets the tag type for a specific tag id.
+
 
 Tagged Values and Entries
 -------------------------
@@ -78,8 +94,8 @@ values will be used for any that are not specified.
 **``objectFactory : function(id, entries)``** - Provides a function to create an entry
 for an "object" tag. The ``id`` parameter is the id of the object within its parent,
 and ``entries`` is an array of the entries for this object. The result must be an
-entry. The default implementation uses a new tagio.SimpleTaggedObject instance constructed
-from ``entries`` as the entry value.
+entry. The default implementation uses a new ``tagio.SimpleTaggedObject`` instance
+constructed from ``entries`` as the entry value.
 
 **``listFactory : function(id, entryType, values)``** - Provides a function to create an
 entry for a "list" tag. The ``id`` parameter is the id of the list within its parent,
@@ -114,4 +130,82 @@ Reads the next entry from the stream.
 
 * **``callback(err, entry)``** - Invoked upon completion with the entry read.
   If there is no more data available then ``value`` will be null.
+
+Interface: TaggedObject
+-----------------------
+
+The following methods are expected to be provided by javascript Objects that represent
+the minecraft tagged object when interacting with this library.
+
+entries = tagobj.getEntries()
+-----------------------------
+
+* ``entries`` - Array of entry objects.
+
+Gets the list of entries for this object
+
+entry = tagobj.getEntry(id)
+-----------------------------
+
+* ``id`` - The entry identifier requested
+* ``entry`` - The entry for the identifier, or null if there is no match
+
+
+
+Class: SimpleTaggedObject
+-------------------------
+
+Provides a read-only javascript Object representation of a tagged minecraft object. For
+simple use one need not overly worry about the details, simply interact with the
+object as if it were a native javascript object.
+
+new SimpleTaggedObject(entries)
+-------------------------------
+
+* ``entries`` - Array of entry objects.
+
+Constructs a new object constructed from the entries provided. No validation is performed
+for uniqueness or sanity. Each of the entries becomes a property in the object using the
+entry's ``id`` as the key and the entry's ``value`` as the value.
+
+entries = tagobj.getEntries()
+-----------------------------
+
+* ``entries`` - Array of entry objects.
+
+Gets the list of entries for this object. The object returned should not be modified.
+
+entry = tagobj.getEntry(id)
+-----------------------------
+
+* ``id`` - The entry identifier requested
+* ``entry`` - The entry for the identifier, or null if there is no match
+
+Gets the entry for a particular entry identifier. The object returned should not be modified.
+
+tagType = tagobj.getType(id)
+-----------------------------
+
+* ``id`` - The entry identifier requested
+* ``tagType`` - The tag type for the identifier, or null if there is no match.
+
+Gets the type for a particular entry identifier.
+
+value = tagobj.getValue(id)
+-----------------------------
+
+* ``id`` - The entry identifier requested
+* ``value`` - The value for the identifier, or null if there is no match
+
+Gets the value for a particular entry identifier.
+
+
+
+Future Required Features
+------------------------
+
+* A TagWriter with which to create streams from data
+* A robust writable object implementation (likely has to be an "entry map" of some
+  description)
+* Improved stream state handling after error
 
