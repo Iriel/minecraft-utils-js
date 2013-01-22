@@ -11,19 +11,107 @@ binary structure used by Minecraft for serialization.  The primary
 means of interaction is via the ``TagReader`` object, which can be
 used as a ``Writable Stream`` and then asked for data.
 
-The ``TagReader.readObject(callback)`` method requests a single Object
-value from the reader. The callback will be invoked with arguments
-``(err, object, name)`` where name is the tag name from the stream
-(usually an empty string). If both ``err`` and ``object`` are null
-then the end of the stream has been reached.
+Tag Types
+---------
 
-The ``TagReader.readValue(callback)`` method provides a lower level of
-access, and requests the next tagged value of any type from the
-reader. The callback will be invoked with arguments
-``(err, valueData)`` where the valueData is an array of the form
-``[ name, [ type, value ]]``, or null if the end of the stream has
- been reached.
+The types of serialized values are represented by instances of the
+``tagio.TagType`` object. Users are not expected to create these directly, but
+instead use the constants and methods provided. Each type has the following
+properties..
 
-Although the read methods execute asynchronously, they will be
-serviced in the order they are received.
+**``id``** - The numeric tag type from the minecraft format
+
+**``label``** - A readable String type label
+
+**``entryType``** - For typed lists, the TagType of the list's contents
+
+Each type also provides the following method:
+
+**``getListType()``** - Gets the type representing a list of this type.
+
+The following type constants are defined:
+
+    tagio.TAG_TYPE_END         // Object end marker
+    tagio.TAG_TYPE_BYTE        // 8 bit integer value
+    tagio.TAG_TYPE_SHORT       // 16 bit integer value
+    tagio.TAG_TYPE_INT         // 32 bit integer value
+    tagio.TAG_TYPE_LONG        // 64 bit integer value (ish)
+    tagio.TAG_TYPE_FLOAT       // 32 bit floating point value
+    tagio.TAG_TYPE_DOUBLE      // 64 bit double precision floating point value
+    tagio.TAG_TYPE_BYTE_ARRAY  // Array of bytes
+    tagio.TAG_TYPE_INT_ARRAY   // Array of (32 bit) integers
+    tagio.TAG_TYPE_STRING      // UTF-8 String
+    tagio.TAG_TYPE_LIST        // List of typed values
+    tagio.TAG_TYPE_OBJECT      // Object of named, typed, values
+
+The ``TAG_TYPE_LIST`` constant has no entry type.
+
+Tagged Values and Entries
+-------------------------
+
+The tagged data structure stores all values with an associated type, in addition
+many values occur in the context of an object container and as such have an identifier.
+The exception is values appearing in a list, in which case the list carries the type of
+all values and they are effectively anonymous. The combination of identifier, type, and
+value is referred to in this library as an **entry**, and takes the following form:
+
+    entry = { id : "foo", type : tagio.TAG_TYPE_STRING, value : "Bar" }
+
+Class: TagReader
+----------------
+Provides a writable ``Stream`` object from which deserialized values can be requested. The
+request methods operate asynchronously but are processed in the order they are invoked.
+
+Typically used in conjunction with zlib as the various data files are compressed on disk.
+
+    readStream = fs.createReadStream(null, {fd : fd});
+    tagReader = readStream.pipe(zlib.createGunzip()).pipe(new tagio.TagReader());
+    tagReader.readObject(callback);
+
+new TagReader( [ { options } ] )
+--------------------------------
+
+Constructs a new tag reader instance, optionally configured with the specified
+options object. Within the options the following properties can be provided, default
+values will be used for any that are not specified.
+
+**``objectFactory : function(id, entries)``** - Provides a function to create an entry
+for an "object" tag. The ``id`` parameter is the id of the object within its parent,
+and ``entries`` is an array of the entries for this object. The result must be an
+entry. The default implementation uses a new tagio.SimpleTaggedObject instance constructed
+from ``entries`` as the entry value.
+
+**``listFactory : function(id, entryType, values)``** - Provides a function to create an
+entry for a "list" tag. The ``id`` parameter is the id of the list within its parent,
+``entryType`` is the type of entry in the list, and ``values`` is an array of the values
+within the list. The result must be an entry. The default implementation uses the
+``values`` array as the entry value.
+
+**``byteArrayFactory : function(id, buffer)``** - Provides a function to create an
+entry for a "byte array" tag. The ``id`` parameter is the id of the list within its parent,
+and ``buffer`` is a Buffer object containing the data. The result must be an entry. The
+default implementation uses the buffer as the entry value.
+
+**``intArrayFactory : function(id, buffer)``** - Provides a function to create an
+entry for a "int array" tag. The ``id`` parameter is the id of the list within its parent,
+and ``buffer`` is a Buffer object containing the data as big-endian 32 bit values.
+The result must be an entry. The default implementation uses the buffer as the entry
+value.
+
+reader.readObject(callback)
+---------------------------
+
+Reads the next entry from the stream, ensuring that it is an "Object".
+
+* **``callback(err, value, entry)``** - Invoked upon completion with the object value
+  read (for convenience) and also the complete entry containing that value. If there is
+  no more data available then ``value`` will be null.
+
+reader.readEntry(callback)
+---------------------------
+
+Reads the next entry from the stream.
+
+* **``callback(err, entry)``** - Invoked upon completion with the entry read.
+  If there is no more data available then ``value`` will be null.
 

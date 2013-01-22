@@ -36,7 +36,7 @@ var nextFile = function() {
 	var rStream = fs.createReadStream(null, {fd : fd});
 	var tagReader = rStream.pipe(zlib.createGunzip()).pipe(new tagio.TagReader());
 
-	var roCallback = function(err, obj, name) {
+	var roCallback = function(err, obj, entry) {
 	    if (err) {
 		try {
 		    rStream.destroy();

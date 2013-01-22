@@ -591,11 +591,11 @@ TagReader.prototype._fail = function(error) {
     this.emit('error', 'Failed');
 }
 
-var ReadValueHelper = function(callback) {
+var ReadEntryHelper = function(callback) {
     this.callback = callback;
 }
 
-ReadValueHelper.prototype.consume = function(reader, buffer, limit, child) {
+ReadEntryHelper.prototype.consume = function(reader, buffer, limit, child) {
     if (child != null) {
 	this.callback(null, child.value);
 	return;
@@ -610,13 +610,13 @@ ReadValueHelper.prototype.consume = function(reader, buffer, limit, child) {
     return new ReadNamedTagHelper();
 }
 
-ReadValueHelper.prototype.error = function(err) {
+ReadEntryHelper.prototype.error = function(err) {
     this.callback(err);
 }
 
-ReadValueHelper.prototype.toString = function() { return "ReadValueHelper"; }
+ReadEntryHelper.prototype.toString = function() { return "ReadEntryHelper"; }
 
-TagReader.prototype.readValue = function(callback) {
+TagReader.prototype.readEntry = function(callback) {
     if (this._failed) {
 	callback(this._failed);
 	return;
@@ -625,7 +625,7 @@ TagReader.prototype.readValue = function(callback) {
 	callback(null, null);
 	return;
     }
-    this._pending.push(new ReadValueHelper(callback));
+    this._pending.push(new ReadEntryHelper(callback));
     if (this._pending.length == 1) {
 	this._consume();
     }
